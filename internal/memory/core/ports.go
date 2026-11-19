@@ -6,7 +6,7 @@ import (
 )
 
 type MemoryRepository interface {
-	Save(ctx context.Context, memory Memory) error
+	Save(ctx context.Context, memory Memory) (string, error)
 
 	FindByID(
 		ctx context.Context,

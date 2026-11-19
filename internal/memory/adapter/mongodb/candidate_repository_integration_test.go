@@ -1,0 +1,245 @@
+package mongodb
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"the-bebot/internal/memory/core"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+func setupCandidateRepository(t *testing.T) *CandidateRepository {
+	t.Helper()
+
+	memoryRepository := setupMemoryRepository(t)
+	database := memoryRepository.collection.Database()
+
+	repository, err := NewCandidateRepository(database)
+	if err != nil {
+		t.Fatalf("create candidate repository failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := repository.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("create candidate indexes failed: %v", err)
+	}
+
+	return repository
+}
+
+func newTestCandidate(
+	t *testing.T,
+	guildID string,
+	messageID string,
+	expireAt time.Time,
+) core.MemoryCandidate {
+	t.Helper()
+
+	now := time.Now().UTC()
+
+	candidate, err := core.NewMemoryCandidate(core.MemoryCandidate{
+		ID:        primitive.NewObjectID().Hex(),
+		GuildID:   guildID,
+		ChannelID: "channel-123",
+		MessageID: messageID,
+		UserID:    "user-123",
+		Content:   "User prefers Go programming",
+		Status:    core.CandidateStatusPending,
+		Attempts:  0,
+		ExpireAt:  expireAt,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create test candidate failed: %v", err)
+	}
+
+	return candidate
+}
+
+func TestCandidateRepositoryCreateAndClaim(t *testing.T) {
+	repository := setupCandidateRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	expireAt := now.Add(time.Hour)
+
+	candidate := newTestCandidate(
+		t,
+		"guild-123",
+		"message-123",
+		expireAt,
+	)
+
+	// Create.
+	if err := repository.Create(ctx, candidate); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Duplicate protection.
+	err := repository.Create(ctx, candidate)
+	if !errors.Is(err, ErrCandidateAlreadyExists) {
+		t.Fatalf("expected ErrCandidateAlreadyExists, got %v", err)
+	}
+
+	// First worker claims the candidate.
+	claimed, err := repository.ClaimNext(
+		ctx,
+		"worker-1",
+		now,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("ClaimNext failed: %v", err)
+	}
+
+	if claimed == nil {
+		t.Fatal("expected a candidate to be claimed")
+	}
+
+	if claimed.Status != core.CandidateStatusProcessing {
+		t.Errorf(
+			"expected processing status, got %q",
+			claimed.Status,
+		)
+	}
+
+	if claimed.WorkerID != "worker-1" {
+		t.Errorf(
+			"expected worker-1, got %q",
+			claimed.WorkerID,
+		)
+	}
+
+	if claimed.Attempts != 1 {
+		t.Errorf("expected 1 attempt, got %d", claimed.Attempts)
+	}
+
+	if claimed.LockedUntil == nil {
+		t.Fatal("expected LockedUntil to be set")
+	}
+
+	expectedLock := now.Add(5 * time.Minute)
+	if !claimed.LockedUntil.Equal(expectedLock) {
+		t.Errorf(
+			"expected lock until %v, got %v",
+			expectedLock,
+			*claimed.LockedUntil,
+		)
+	}
+
+	// Another worker must not claim an active lock.
+	secondClaim, err := repository.ClaimNext(
+		ctx,
+		"worker-2",
+		now.Add(time.Minute),
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("second ClaimNext failed: %v", err)
+	}
+
+	if secondClaim != nil {
+		t.Fatal("another worker claimed a candidate with an active lock")
+	}
+
+	// Simulate an expired lock.
+	expiredLock := now.Add(-time.Minute)
+	claimed.LockedUntil = &expiredLock
+	claimed.UpdatedAt = now.Add(2 * time.Minute)
+
+	if err := repository.Update(ctx, *claimed); err != nil {
+		t.Fatalf("Update expired lock failed: %v", err)
+	}
+
+	// Another worker can now recover and claim it.
+	recovered, err := repository.ClaimNext(
+		ctx,
+		"worker-2",
+		now.Add(3*time.Minute),
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("claim after lock expiration failed: %v", err)
+	}
+
+	if recovered == nil {
+		t.Fatal("expected expired candidate to be claimed again")
+	}
+
+	if recovered.WorkerID != "worker-2" {
+		t.Errorf(
+			"expected worker-2, got %q",
+			recovered.WorkerID,
+		)
+	}
+
+	if recovered.Attempts != 2 {
+		t.Errorf("expected 2 attempts, got %d", recovered.Attempts)
+	}
+}
+
+func TestCandidateRepositoryDeleteExpired(t *testing.T) {
+	repository := setupCandidateRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC()
+
+	expiredCandidate := newTestCandidate(
+		t,
+		"guild-123",
+		"message-expired",
+		now.Add(-time.Hour),
+	)
+
+	activeCandidate := newTestCandidate(
+		t,
+		"guild-123",
+		"message-active",
+		now.Add(time.Hour),
+	)
+
+	if err := repository.Create(ctx, expiredCandidate); err != nil {
+		t.Fatalf("create expired candidate failed: %v", err)
+	}
+
+	if err := repository.Create(ctx, activeCandidate); err != nil {
+		t.Fatalf("create active candidate failed: %v", err)
+	}
+
+	if err := repository.DeleteExpired(ctx, now); err != nil {
+		t.Fatalf("DeleteExpired failed: %v", err)
+	}
+
+	// Expired candidate must no longer be claimable.
+	claimed, err := repository.ClaimNext(
+		ctx,
+		"worker-1",
+		now,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("ClaimNext after expiration failed: %v", err)
+	}
+
+	if claimed == nil {
+		t.Fatal("expected active candidate to remain")
+	}
+
+	if claimed.MessageID != activeCandidate.MessageID {
+		t.Errorf(
+			"expected active candidate %q, got %q",
+			activeCandidate.MessageID,
+			claimed.MessageID,
+		)
+	}
+}

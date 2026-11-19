@@ -27,8 +27,8 @@ type mockMemoryRepository struct {
 func (m *mockMemoryRepository) Save(
 	ctx context.Context,
 	memory core.Memory,
-) error {
-	return nil
+) (string, error) {
+	return memory.ID, nil
 }
 
 func (m *mockMemoryRepository) FindByID(
