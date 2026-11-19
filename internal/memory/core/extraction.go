@@ -40,13 +40,14 @@ type ExtractionSource struct {
 }
 
 type ExtractedMemory struct {
-	Scope      MemoryScope
-	Type       MemoryType
-	UserID     string
-	Content    string
-	Importance int
-	Confidence float64
-	Tags       []string
+	Scope           MemoryScope `json:"scope"`
+	Type            MemoryType  `json:"type"`
+	UserID          string      `json:"user_id"`
+	Content         string      `json:"content"`
+	Importance      int         `json:"importance"`
+	Confidence      float64     `json:"confidence"`
+	Tags            []string    `json:"tags"`
+	SourceMessageID string      `json:"source_message_id"`
 }
 
 func NewExtractionInput(input ExtractionInput) (ExtractionInput, error) {

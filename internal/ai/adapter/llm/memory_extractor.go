@@ -42,6 +42,24 @@ Expected JSON format:
     "tags": ["go", "programming"]
   }
 ]
+
+For every extracted memory:
+
+- Include source_message_id.
+- source_message_id must be an existing message ID
+  from the provided conversation.
+- Do not invent message IDs.
+- The source message must support the extracted memory.
+- For member scope, the source message author must
+  match the target user ID.
+- For community scope, the source message may belong
+  to any community member.
+
+Return JSON with these fields:
+scope, type, content, importance, confidence,
+tags, source_message_id.
+
+Do not return user_id.
 `
 
 type MemoryExtractor struct {
