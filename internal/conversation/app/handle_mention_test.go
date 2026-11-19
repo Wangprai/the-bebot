@@ -10,11 +10,14 @@ import (
 )
 
 // ContextProvider Mock
-
 type mockContextProvider struct {
 	messages []core.Message
 	err      error
 	called   bool
+
+	receivedGuildID   string
+	receivedChannelID string
+	receivedLimit     int
 }
 
 func (m *mockContextProvider) FetchRecentMessages(
@@ -24,11 +27,14 @@ func (m *mockContextProvider) FetchRecentMessages(
 	limit int,
 ) ([]core.Message, error) {
 	m.called = true
+	m.receivedGuildID = guildID
+	m.receivedChannelID = channelID
+	m.receivedLimit = limit
+	
 	return m.messages, m.err
 }
 
 // ConversationService Mock
-
 type mockConversationService struct {
 	result core.ConversationContext
 	err    error
@@ -42,6 +48,7 @@ func (m *mockConversationService) BuildContext(
 	ttl time.Duration,
 ) (core.ConversationContext, error) {
 	m.called = true
+
 	return m.result, m.err
 }
 
@@ -53,11 +60,12 @@ func (m *mockConversationService) ValidateContext(
 }
 
 // ResponseGenerator Mock
-
 type mockResponseGenerator struct {
-	response string
-	err      error
-	called   bool
+    response string
+    err      error
+    called   bool
+
+    receivedContext core.ConversationContext
 }
 
 func (m *mockResponseGenerator) Generate(
@@ -65,15 +73,19 @@ func (m *mockResponseGenerator) Generate(
 	conversationContext core.ConversationContext,
 ) (string, error) {
 	m.called = true
+	m.receivedContext = conversationContext
+
 	return m.response, m.err
 }
 
 // MessageSender Mock
-
 type mockMessageSender struct {
-	err     error
-	called  bool
-	content string
+    err     error
+    called  bool
+    content string
+
+    receivedGuildID   string
+    receivedChannelID string
 }
 
 func (m *mockMessageSender) Send(
@@ -84,6 +96,8 @@ func (m *mockMessageSender) Send(
 ) (core.Message, error) {
 	m.called = true
 	m.content = content
+	m.receivedGuildID = guildID
+	m.receivedChannelID = channelID
 
 	return core.Message{}, m.err
 }
