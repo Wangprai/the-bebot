@@ -58,3 +58,23 @@ type CandidateRepository interface {
 		before time.Time,
 	) error
 }
+
+type MemoryExtractor interface {
+	Extract(
+		ctx context.Context,
+		input ExtractionInput,
+	) ([]ExtractedMemory, error)
+}
+
+type MemoryValidator interface {
+	Validate(
+		input ExtractedMemory,
+		source ExtractionSource,
+	) (Memory, error)
+}
+
+type CandidateRuleEvaluator interface {
+	ShouldCreateCandidate(
+		context ConversationSnapshot,
+	) (bool, error)
+}
