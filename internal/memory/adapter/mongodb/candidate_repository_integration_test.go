@@ -117,17 +117,11 @@ func TestCandidateRepositoryCreateAndClaim(t *testing.T) {
 	}
 
 	if claimed.Status != core.CandidateStatusProcessing {
-		t.Errorf(
-			"expected processing status, got %q",
-			claimed.Status,
-		)
+		t.Errorf("expected processing status, got %q", claimed.Status)
 	}
 
 	if claimed.WorkerID != "worker-1" {
-		t.Errorf(
-			"expected worker-1, got %q",
-			claimed.WorkerID,
-		)
+		t.Errorf("expected worker-1, got %q", claimed.WorkerID)
 	}
 
 	if claimed.Attempts != 1 {
@@ -145,6 +139,47 @@ func TestCandidateRepositoryCreateAndClaim(t *testing.T) {
 			expectedLock,
 			*claimed.LockedUntil,
 		)
+	}
+
+	// Verify that the conversation snapshot was persisted correctly.
+	if len(claimed.Messages) != len(candidate.Messages) {
+		t.Fatalf(
+			"expected %d messages, got %d",
+			len(candidate.Messages),
+			len(claimed.Messages),
+		)
+	}
+
+	for i, message := range candidate.Messages {
+		got := claimed.Messages[i]
+
+		if got.MessageID != message.MessageID {
+			t.Errorf(
+				"message[%d] ID mismatch: expected %s, got %s",
+				i, message.MessageID, got.MessageID,
+			)
+		}
+
+		if got.UserID != message.UserID {
+			t.Errorf(
+				"message[%d] UserID mismatch: expected %s, got %s",
+				i, message.UserID, got.UserID,
+			)
+		}
+
+		if got.Content != message.Content {
+			t.Errorf(
+				"message[%d] Content mismatch: expected %s, got %s",
+				i, message.Content, got.Content,
+			)
+		}
+
+		if got.IsBot != message.IsBot {
+			t.Errorf(
+				"message[%d] IsBot mismatch: expected %v, got %v",
+				i, message.IsBot, got.IsBot,
+			)
+		}
 	}
 
 	// Another worker must not claim an active lock.
@@ -187,10 +222,7 @@ func TestCandidateRepositoryCreateAndClaim(t *testing.T) {
 	}
 
 	if recovered.WorkerID != "worker-2" {
-		t.Errorf(
-			"expected worker-2, got %q",
-			recovered.WorkerID,
-		)
+		t.Errorf("expected worker-2, got %q", recovered.WorkerID)
 	}
 
 	if recovered.Attempts != 2 {
