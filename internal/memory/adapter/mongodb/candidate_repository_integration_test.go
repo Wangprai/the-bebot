@@ -35,7 +35,9 @@ func setupCandidateRepository(t *testing.T) *CandidateRepository {
 func newTestCandidate(
 	t *testing.T,
 	guildID string,
+	channelID string,
 	messageID string,
+	userID string,
 	expireAt time.Time,
 ) core.MemoryCandidate {
 	t.Helper()
@@ -45,12 +47,20 @@ func newTestCandidate(
 	candidate, err := core.NewMemoryCandidate(core.MemoryCandidate{
 		ID:        primitive.NewObjectID().Hex(),
 		GuildID:   guildID,
-		ChannelID: "channel-123",
+		ChannelID: channelID,
 		MessageID: messageID,
-		UserID:    "user-123",
-		Content:   "User prefers Go programming",
+		UserID:    userID,
+		Content:   "User likes Go programming",
 		Status:    core.CandidateStatusPending,
-		Attempts:  0,
+
+		Messages: []core.ConversationMessage{
+			{
+				MessageID: messageID,
+				UserID:    userID,
+				Content:   "User likes Go programming",
+			},
+		},
+
 		ExpireAt:  expireAt,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -74,7 +84,9 @@ func TestCandidateRepositoryCreateAndClaim(t *testing.T) {
 	candidate := newTestCandidate(
 		t,
 		"guild-123",
+		"channel-123",
 		"message-123",
+		"user-123",
 		expireAt,
 	)
 
@@ -197,14 +209,18 @@ func TestCandidateRepositoryDeleteExpired(t *testing.T) {
 	expiredCandidate := newTestCandidate(
 		t,
 		"guild-123",
+		"channel-123",
 		"message-expired",
+		"user-123",
 		now.Add(-time.Hour),
 	)
 
 	activeCandidate := newTestCandidate(
 		t,
 		"guild-123",
+		"channel-123",
 		"message-active",
+		"user-123",
 		now.Add(time.Hour),
 	)
 
