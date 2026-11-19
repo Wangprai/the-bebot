@@ -11,15 +11,24 @@ func processingCandidate() MemoryCandidate {
 	lockedUntil := now.Add(5 * time.Minute)
 
 	return MemoryCandidate{
-		ID:          "candidate-001",
-		GuildID:     "guild-001",
-		ChannelID:   "channel-001",
-		MessageID:   "message-001",
-		UserID:      "user-001",
-		Content:     "User likes Go programming",
-		Status:      CandidateStatusProcessing,
-		Attempts:    1,
-		WorkerID:    "worker-001",
+		ID:        "candidate-001",
+		GuildID:   "guild-001",
+		ChannelID: "channel-001",
+		MessageID: "message-001",
+		UserID:    "user-001",
+		Content:   "User likes Go programming",
+		Status:    CandidateStatusProcessing,
+		Attempts:  1,
+		WorkerID:  "worker-001",
+
+		Messages: []ConversationMessage{
+			{
+				MessageID: "message-001",
+				UserID:    "user-001",
+				Content:   "User likes Go programming",
+			},
+		},
+
 		LockedUntil: &lockedUntil,
 		ExpireAt:    now.Add(24 * time.Hour),
 		CreatedAt:   now,
@@ -165,6 +174,13 @@ func validMemoryCandidate() MemoryCandidate {
 		Content:   "User likes Go programming",
 		Status:    CandidateStatusPending,
 		Attempts:  0,
+		Messages: []ConversationMessage{
+			{
+				MessageID: "message-001",
+				UserID:    "user-001",
+				Content:   "User likes Go programming",
+			},
+		},
 		ExpireAt:  now.Add(24 * time.Hour),
 		CreatedAt: now,
 		UpdatedAt: now,

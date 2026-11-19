@@ -171,19 +171,19 @@ type MemoryCandidate struct {
 	ChannelID string
 	MessageID string
 	UserID    string
+	Content   string
 
-	Content string
-	Status  CandidateStatus
+	// Context snapshot at the time of mention.
+	Messages []ConversationMessage
 
-	Attempts int
-	WorkerID string
-
+	Status      CandidateStatus
+	Attempts    int
+	WorkerID    string
 	LockedUntil *time.Time
 	NextRetryAt *time.Time
 	ExpireAt    time.Time
-
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 func NewMemoryCandidate(candidate MemoryCandidate) (MemoryCandidate, error) {
@@ -194,6 +194,12 @@ func NewMemoryCandidate(candidate MemoryCandidate) (MemoryCandidate, error) {
 	candidate.UserID = strings.TrimSpace(candidate.UserID)
 	candidate.Content = strings.TrimSpace(candidate.Content)
 	candidate.WorkerID = strings.TrimSpace(candidate.WorkerID)
+
+	// Copy messages to prevent modifying the original slice.
+	candidate.Messages = append(
+		[]ConversationMessage(nil),
+		candidate.Messages...,
+	)
 
 	if candidate.ID == "" {
 		return MemoryCandidate{}, ErrInvalidMemoryID
@@ -232,6 +238,44 @@ func NewMemoryCandidate(candidate MemoryCandidate) (MemoryCandidate, error) {
 	if candidate.Status == CandidateStatusProcessing &&
 		candidate.WorkerID == "" {
 		return MemoryCandidate{}, errors.New("processing candidate requires worker ID")
+	}
+
+	// Validate conversation messages.
+	if len(candidate.Messages) == 0 {
+		return MemoryCandidate{}, errors.New("candidate messages are required")
+	}
+
+	seenMessageIDs := make(map[string]struct{}, len(candidate.Messages))
+
+	for i := range candidate.Messages {
+		message := &candidate.Messages[i]
+
+		message.MessageID = strings.TrimSpace(message.MessageID)
+		message.UserID = strings.TrimSpace(message.UserID)
+		message.Content = strings.TrimSpace(message.Content)
+
+		if message.MessageID == "" {
+			return MemoryCandidate{}, errors.New("candidate message ID is required")
+		}
+
+		if message.UserID == "" {
+			return MemoryCandidate{}, errors.New("candidate message user ID is required")
+		}
+
+		if message.Content == "" {
+			return MemoryCandidate{}, errors.New("candidate message content is required")
+		}
+
+		if _, exists := seenMessageIDs[message.MessageID]; exists {
+			return MemoryCandidate{}, errors.New("duplicate candidate message ID")
+		}
+
+		seenMessageIDs[message.MessageID] = struct{}{}
+	}
+
+	// Ensure the trigger message exists in the conversation snapshot.
+	if _, exists := seenMessageIDs[candidate.MessageID]; !exists {
+		return MemoryCandidate{}, errors.New("candidate trigger message not found in messages")
 	}
 
 	return candidate, nil
