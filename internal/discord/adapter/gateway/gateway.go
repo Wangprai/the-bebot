@@ -20,6 +20,12 @@ type Gateway struct {
 
 	mu        sync.RWMutex
 	botUserID string
+
+	started bool
+	closed  bool
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func NewGateway(
@@ -57,11 +63,25 @@ func NewGateway(
 	return g, nil
 }
 
-func (g *Gateway) SetMentionHandler(handler MentionHandler) {
+func (g *Gateway) SetMentionHandler(handler MentionHandler) error {
+	if handler == nil {
+		return fmt.Errorf("mention handler is required")
+	}
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	if g.started {
+		return fmt.Errorf("cannot set mention handler after gateway started")
+	}
+
+	if g.closed {
+		return fmt.Errorf("cannot set mention handler after gateway closed")
+	}
+
 	g.mentionHandler = handler
+
+	return nil
 }
 
 func (g *Gateway) Start(ctx context.Context) error {
@@ -71,22 +91,32 @@ func (g *Gateway) Start(ctx context.Context) error {
 
 	g.mu.Lock()
 
-	if g.ctx != nil {
+	if g.started {
 		g.mu.Unlock()
 		return fmt.Errorf("discord gateway already started")
 	}
 
+	if g.closed {
+		g.mu.Unlock()
+		return fmt.Errorf("discord gateway is already closed")
+	}
+
+	if g.mentionHandler == nil {
+		g.mu.Unlock()
+		return fmt.Errorf("mention handler is required")
+	}
+
 	g.ctx, g.cancel = context.WithCancel(ctx)
+	g.started = true
 
 	g.mu.Unlock()
 
 	if err := g.session.Open(); err != nil {
 		g.mu.Lock()
-
 		g.cancel()
 		g.ctx = nil
 		g.cancel = nil
-
+		g.started = false
 		g.mu.Unlock()
 
 		return fmt.Errorf("open discord gateway: %w", err)
@@ -98,30 +128,35 @@ func (g *Gateway) Start(ctx context.Context) error {
 }
 
 func (g *Gateway) Close() error {
-	g.mu.Lock()
+	g.closeOnce.Do(func() {
+		g.mu.Lock()
 
-	cancel := g.cancel
-	g.cancel = nil
-	g.ctx = nil
+		g.closed = true
 
-	g.mu.Unlock()
+		cancel := g.cancel
+		g.cancel = nil
+		g.ctx = nil
 
-	// Cancel ongoing mention operations first.
-	if cancel != nil {
-		cancel()
-	}
+		g.mu.Unlock()
 
-	if g.session == nil {
-		return nil
-	}
+		if cancel != nil {
+			cancel()
+		}
 
-	if err := g.session.Close(); err != nil {
-		return fmt.Errorf("close discord gateway: %w", err)
-	}
+		if g.session != nil {
+			if err := g.session.Close(); err != nil {
+				g.closeErr = fmt.Errorf(
+					"close discord gateway: %w",
+					err,
+				)
+				return
+			}
+		}
 
-	g.logger.Info("Discord gateway disconnected")
+		g.logger.Info("Discord gateway disconnected")
+	})
 
-	return nil
+	return g.closeErr
 }
 
 func (g *Gateway) Session() *discordgo.Session {

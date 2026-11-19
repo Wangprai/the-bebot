@@ -35,7 +35,6 @@ func run() error {
 
 	// Initialize logger
 	appLogger := logger.New(cfg.LogLevel, cfg.AppEnv)
-
 	appLogger.Info("Starting The Bebot")
 
 	// Create application context
@@ -69,6 +68,24 @@ func run() error {
 		"database", cfg.MongoDB.Database,
 	)
 
+	// MongoDB cleanup
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
+		defer cancel()
+
+		if err := db.Close(shutdownCtx); err != nil {
+			appLogger.Error(
+				"Failed to disconnect MongoDB",
+				"error", err,
+			)
+		} else {
+			appLogger.Info("MongoDB disconnected")
+		}
+	}()
+
 	// Initialize LLM Client
 	llmClient, err := llm.NewClient(llm.Config{
 		Endpoint: cfg.LLM.BaseURL,
@@ -77,14 +94,6 @@ func run() error {
 		Timeout:  cfg.Conversation.Timeout,
 	})
 	if err != nil {
-		closeCtx, cancel := context.WithTimeout(
-			context.Background(),
-			10*time.Second,
-		)
-		defer cancel()
-
-		_ = db.Close(closeCtx)
-
 		return fmt.Errorf("initialize LLM client: %w", err)
 	}
 
@@ -95,32 +104,24 @@ func run() error {
 		nil,
 	)
 	if err != nil {
-		closeCtx, cancel := context.WithTimeout(
-			context.Background(),
-			10*time.Second,
-		)
-		defer cancel()
-
-		_ = db.Close(closeCtx)
-
 		return fmt.Errorf("initialize Discord gateway: %w", err)
 	}
+
+	// Gateway cleanup
+	defer func() {
+		if err := discordGateway.Close(); err != nil {
+			appLogger.Error(
+				"Failed to close Discord gateway",
+				"error", err,
+			)
+		}
+	}()
 
 	// Create Discord Client
 	discordClient, err := gateway.NewDiscordClient(
 		discordGateway.Session(),
 	)
 	if err != nil {
-		_ = discordGateway.Close()
-
-		closeCtx, cancel := context.WithTimeout(
-			context.Background(),
-			10*time.Second,
-		)
-		defer cancel()
-
-		_ = db.Close(closeCtx)
-
 		return fmt.Errorf("initialize Discord client: %w", err)
 	}
 
@@ -137,21 +138,13 @@ func run() error {
 		conversationContextTTL,
 	)
 
-	// Inject Mention Handler into Gateway
-	discordGateway.SetMentionHandler(mentionHandler)
+	// Inject Mention Handler
+	if err := discordGateway.SetMentionHandler(mentionHandler); err != nil {
+		return fmt.Errorf("set mention handler: %w", err)
+	}
 
 	// Start Discord Gateway
 	if err := discordGateway.Start(ctx); err != nil {
-		_ = discordGateway.Close()
-
-		closeCtx, cancel := context.WithTimeout(
-			context.Background(),
-			10*time.Second,
-		)
-		defer cancel()
-
-		_ = db.Close(closeCtx)
-
 		return fmt.Errorf("start Discord gateway: %w", err)
 	}
 
@@ -161,32 +154,6 @@ func run() error {
 	<-ctx.Done()
 
 	appLogger.Info("Shutdown signal received")
-
-	// 13. Graceful Shutdown
-	shutdownCtx, shutdownCancel := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-	defer shutdownCancel()
-
-	// Stop Discord Gateway first
-	if err := discordGateway.Close(); err != nil {
-		appLogger.Error(
-			"Failed to close Discord gateway",
-			"error", err,
-		)
-	}
-
-	// Disconnect MongoDB
-	if err := db.Close(shutdownCtx); err != nil {
-		appLogger.Error(
-			"Failed to disconnect MongoDB",
-			"error", err,
-		)
-	} else {
-		appLogger.Info("MongoDB disconnected")
-	}
-
 	appLogger.Info("The Bebot stopped")
 
 	return nil
