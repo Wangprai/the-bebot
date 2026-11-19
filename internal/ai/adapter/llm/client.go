@@ -114,6 +114,83 @@ func (c *Client) Generate(
 		return "", err
 	}
 
+	return c.complete(ctx, messages)
+}
+
+func buildChatMessages(
+	systemPrompt string,
+	contextMessages []core.Message,
+) ([]chatMessage, error) {
+	if len(contextMessages) == 0 {
+		return nil, fmt.Errorf("conversation context is empty")
+	}
+
+	messages := make([]chatMessage, 0, len(contextMessages)+1)
+
+	messages = append(messages, chatMessage{
+		Role:    "system",
+		Content: systemPrompt,
+	})
+
+	for _, message := range contextMessages {
+		content := strings.TrimSpace(message.Content)
+
+		if content == "" {
+			continue
+		}
+
+		// Other bots are context, not The Bebot's own responses.
+		if message.IsBot {
+			content = "[Another bot said]: " + content
+		}
+
+		messages = append(messages, chatMessage{
+			Role:    "user",
+			Content: content,
+		})
+	}
+
+	if len(messages) == 1 {
+		return nil, fmt.Errorf("conversation context contains no usable messages")
+	}
+
+	return messages, nil
+}
+
+func (c *Client) GenerateText(
+	ctx context.Context,
+	systemPrompt string,
+	userPrompt string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	systemPrompt = strings.TrimSpace(systemPrompt)
+	userPrompt = strings.TrimSpace(userPrompt)
+
+	if systemPrompt == "" || userPrompt == "" {
+		return "", fmt.Errorf("system prompt and user prompt are required")
+	}
+
+	messages := []chatMessage{
+		{
+			Role:    "system",
+			Content: systemPrompt,
+		},
+		{
+			Role:    "user",
+			Content: userPrompt,
+		},
+	}
+
+	return c.complete(ctx, messages)
+}
+
+func (c *Client) complete(
+	ctx context.Context,
+	messages []chatMessage,
+) (string, error) {
 	requestBody := chatRequest{
 		Model:    c.model,
 		Messages: messages,
@@ -167,10 +244,7 @@ func (c *Client) Generate(
 	}
 
 	if result.Error != nil {
-		return "", fmt.Errorf(
-			"LLM API error: %s",
-			result.Error.Message,
-		)
+		return "", fmt.Errorf("LLM API error: %s", result.Error.Message)
 	}
 
 	if len(result.Choices) == 0 {
@@ -184,44 +258,4 @@ func (c *Client) Generate(
 	}
 
 	return content, nil
-}
-
-func buildChatMessages(
-	systemPrompt string,
-	contextMessages []core.Message,
-) ([]chatMessage, error) {
-	if len(contextMessages) == 0 {
-		return nil, fmt.Errorf("conversation context is empty")
-	}
-
-	messages := make([]chatMessage, 0, len(contextMessages)+1)
-
-	messages = append(messages, chatMessage{
-		Role:    "system",
-		Content: systemPrompt,
-	})
-
-	for _, message := range contextMessages {
-		content := strings.TrimSpace(message.Content)
-
-		if content == "" {
-			continue
-		}
-
-		// Other bots are context, not The Bebot's own responses.
-		if message.IsBot {
-			content = "[Another bot said]: " + content
-		}
-
-		messages = append(messages, chatMessage{
-			Role:    "user",
-			Content: content,
-		})
-	}
-
-	if len(messages) == 1 {
-		return nil, fmt.Errorf("conversation context contains no usable messages")
-	}
-
-	return messages, nil
 }
