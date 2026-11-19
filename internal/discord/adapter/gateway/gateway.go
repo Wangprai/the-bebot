@@ -15,6 +15,9 @@ type Gateway struct {
 
 	mentionHandler MentionHandler
 
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mu        sync.RWMutex
 	botUserID string
 }
@@ -28,8 +31,8 @@ func NewGateway(
 		return nil, fmt.Errorf("discord bot token is required")
 	}
 
-	if mentionHandler == nil {
-		return nil, fmt.Errorf("mention handler is required")
+	if logger == nil {
+		return nil, fmt.Errorf("logger is required")
 	}
 
 	session, err := discordgo.New("Bot " + token)
@@ -42,20 +45,50 @@ func NewGateway(
 			discordgo.IntentsGuildMessages |
 			discordgo.IntentsMessageContent
 
-	gateway := &Gateway{
+	g := &Gateway{
 		session:        session,
 		logger:         logger,
 		mentionHandler: mentionHandler,
 	}
 
-	session.AddHandler(gateway.handleReady)
-	session.AddHandler(gateway.handleMessageCreate)
+	session.AddHandler(g.handleReady)
+	session.AddHandler(g.handleMessageCreate)
 
-	return gateway, nil
+	return g, nil
 }
 
-func (g *Gateway) Start() error {
+func (g *Gateway) SetMentionHandler(handler MentionHandler) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.mentionHandler = handler
+}
+
+func (g *Gateway) Start(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("gateway context is required")
+	}
+
+	g.mu.Lock()
+
+	if g.ctx != nil {
+		g.mu.Unlock()
+		return fmt.Errorf("discord gateway already started")
+	}
+
+	g.ctx, g.cancel = context.WithCancel(ctx)
+
+	g.mu.Unlock()
+
 	if err := g.session.Open(); err != nil {
+		g.mu.Lock()
+
+		g.cancel()
+		g.ctx = nil
+		g.cancel = nil
+
+		g.mu.Unlock()
+
 		return fmt.Errorf("open discord gateway: %w", err)
 	}
 
@@ -65,6 +98,19 @@ func (g *Gateway) Start() error {
 }
 
 func (g *Gateway) Close() error {
+	g.mu.Lock()
+
+	cancel := g.cancel
+	g.cancel = nil
+	g.ctx = nil
+
+	g.mu.Unlock()
+
+	// Cancel ongoing mention operations first.
+	if cancel != nil {
+		cancel()
+	}
+
 	if g.session == nil {
 		return nil
 	}
@@ -86,7 +132,7 @@ func (g *Gateway) handleReady(
 	s *discordgo.Session,
 	event *discordgo.Ready,
 ) {
-	if event.User == nil {
+	if event == nil || event.User == nil {
 		g.logger.Error("Discord ready event has no bot user")
 		return
 	}
@@ -123,7 +169,19 @@ func (g *Gateway) handleMessageCreate(
 
 	g.mu.RLock()
 	botUserID := g.botUserID
+	ctx := g.ctx
+	handler := g.mentionHandler
 	g.mu.RUnlock()
+
+	// Ignore messages before the gateway is started.
+	if ctx == nil {
+		return
+	}
+
+	// Ignore messages while shutting down.
+	if ctx.Err() != nil {
+		return
+	}
 
 	if botUserID == "" {
 		g.logger.Warn("Ignoring message before bot identity is ready")
@@ -136,6 +194,11 @@ func (g *Gateway) handleMessageCreate(
 	}
 
 	if !isBotMentioned(message, botUserID) {
+		return
+	}
+
+	if handler == nil {
+		g.logger.Error("Mention handler is not configured")
 		return
 	}
 
@@ -156,10 +219,7 @@ func (g *Gateway) handleMessageCreate(
 		"user_id", mentionEvent.UserID,
 	)
 
-	if err := g.mentionHandler.HandleMention(
-		context.Background(),
-		mentionEvent,
-	); err != nil {
+	if err := handler.HandleMention(ctx, mentionEvent); err != nil {
 		g.logger.Error(
 			"Failed to handle mention",
 			"message_id", mentionEvent.MessageID,

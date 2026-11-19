@@ -1,24 +1,36 @@
-
 package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"the-bebot/internal/ai/adapter/llm"
+	"the-bebot/internal/conversation/app"
+	"the-bebot/internal/conversation/core"
+	"the-bebot/internal/discord/adapter/gateway"
 	"the-bebot/internal/platform/config"
 	"the-bebot/internal/platform/database"
 	"the-bebot/internal/platform/logger"
 )
 
+const conversationContextTTL = 24 * time.Hour
+
 func main() {
+	if err := run(); err != nil {
+		log.Fatalf("application error: %v", err)
+	}
+}
+
+func run() error {
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("load configuration: %w", err)
 	}
 
 	// Initialize logger
@@ -39,40 +51,143 @@ func main() {
 		ctx,
 		10*time.Second,
 	)
-	defer connectCancel()
 
 	db, err := database.NewMongoDB(
 		connectCtx,
 		cfg.MongoDB.URI,
 		cfg.MongoDB.Database,
 	)
+
+	connectCancel()
+
 	if err != nil {
-		appLogger.Error("Failed to connect MongoDB", "error", err)
-		return
+		return fmt.Errorf("connect MongoDB: %w", err)
 	}
 
-	appLogger.Info("MongoDB connected",
+	appLogger.Info(
+		"MongoDB connected",
 		"database", cfg.MongoDB.Database,
 	)
+
+	// Initialize LLM Client
+	llmClient, err := llm.NewClient(llm.Config{
+		Endpoint: cfg.LLM.BaseURL,
+		APIKey:   cfg.LLM.APIKey,
+		Model:    cfg.LLM.Model,
+		Timeout:  cfg.Conversation.Timeout,
+	})
+	if err != nil {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
+		defer cancel()
+
+		_ = db.Close(closeCtx)
+
+		return fmt.Errorf("initialize LLM client: %w", err)
+	}
+
+	// Initialize Discord Gateway
+	discordGateway, err := gateway.NewGateway(
+		cfg.Discord.BotToken,
+		appLogger,
+		nil,
+	)
+	if err != nil {
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
+		defer cancel()
+
+		_ = db.Close(closeCtx)
+
+		return fmt.Errorf("initialize Discord gateway: %w", err)
+	}
+
+	// Create Discord Client
+	discordClient, err := gateway.NewDiscordClient(
+		discordGateway.Session(),
+	)
+	if err != nil {
+		_ = discordGateway.Close()
+
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
+		defer cancel()
+
+		_ = db.Close(closeCtx)
+
+		return fmt.Errorf("initialize Discord client: %w", err)
+	}
+
+	// Initialize Conversation Service
+	conversationService := core.NewConversationService()
+
+	// Initialize Conversation Use Case
+	mentionHandler := app.NewHandleMentionUseCase(
+		discordClient,
+		conversationService,
+		llmClient,
+		discordClient,
+		cfg.Conversation.MaxMessages,
+		conversationContextTTL,
+	)
+
+	// Inject Mention Handler into Gateway
+	discordGateway.SetMentionHandler(mentionHandler)
+
+	// Start Discord Gateway
+	if err := discordGateway.Start(ctx); err != nil {
+		_ = discordGateway.Close()
+
+		closeCtx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
+		defer cancel()
+
+		_ = db.Close(closeCtx)
+
+		return fmt.Errorf("start Discord gateway: %w", err)
+	}
+
+	appLogger.Info("Discord gateway connected")
 
 	// Wait for shutdown signal
 	<-ctx.Done()
 
 	appLogger.Info("Shutdown signal received")
 
-	// Shutdown with timeout
+	// 13. Graceful Shutdown
 	shutdownCtx, shutdownCancel := context.WithTimeout(
 		context.Background(),
 		10*time.Second,
 	)
 	defer shutdownCancel()
 
+	// Stop Discord Gateway first
+	if err := discordGateway.Close(); err != nil {
+		appLogger.Error(
+			"Failed to close Discord gateway",
+			"error", err,
+		)
+	}
+
 	// Disconnect MongoDB
 	if err := db.Close(shutdownCtx); err != nil {
-		appLogger.Error("Failed to disconnect MongoDB", "error", err)
+		appLogger.Error(
+			"Failed to disconnect MongoDB",
+			"error", err,
+		)
 	} else {
 		appLogger.Info("MongoDB disconnected")
 	}
 
 	appLogger.Info("The Bebot stopped")
+
+	return nil
 }
