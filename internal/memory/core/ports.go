@@ -23,6 +23,7 @@ type MemoryRepository interface {
 
 	UpdateUsage(
 		ctx context.Context,
+		guildID string,
 		memoryID string,
 		usedAt time.Time,
 	) error
