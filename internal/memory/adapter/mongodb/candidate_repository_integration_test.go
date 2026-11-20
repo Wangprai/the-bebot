@@ -3,6 +3,7 @@ package mongodb
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -96,7 +97,16 @@ func TestCandidateRepositoryCreateAndClaim(t *testing.T) {
 	}
 
 	// Duplicate protection.
-	err := repository.Create(ctx, candidate)
+	duplicateCandidate := newTestCandidate(
+		t,
+		"guild-123",
+		"channel-123",
+		"message-123",
+		"user-123",
+		expireAt,
+	)
+
+	err := repository.Create(ctx, duplicateCandidate)
 	if !errors.Is(err, ErrCandidateAlreadyExists) {
 		t.Fatalf("expected ErrCandidateAlreadyExists, got %v", err)
 	}
@@ -385,7 +395,6 @@ func TestCandidateRepositoryClaimFailedCandidateAfterRetry(t *testing.T) {
 	}
 }
 
-
 func TestCandidateRepositoryUpdateProcessingResult(t *testing.T) {
 	repository := setupCandidateRepository(t)
 
@@ -420,6 +429,12 @@ func TestCandidateRepositoryUpdateProcessingResult(t *testing.T) {
 		t.Fatal("expected candidate to be claimed")
 	}
 
+	// Wrong worker should not be allowed to update the candidate.
+	err = repository.UpdateProcessingResult(ctx, *claimed, "worker-2")
+	if !errors.Is(err, ErrCandidateOwnershipLost) {
+		t.Fatalf("expected ErrCandidateOwnershipLost, got %v", err)
+	}
+
 	candidateService := core.NewCandidateService()
 
 	// Case 1: The current owner can save the processing result.
@@ -436,17 +451,7 @@ func TestCandidateRepositoryUpdateProcessingResult(t *testing.T) {
 		t.Fatalf("expected current worker to update candidate: %v", err)
 	}
 
-	// Case 2: A different worker cannot update the candidate.
-	err = repository.UpdateProcessingResult(
-		ctx,
-		completed,
-		"worker-2",
-	)
-	if !errors.Is(err, ErrCandidateOwnershipLost) {
-		t.Fatalf("expected ErrCandidateOwnershipLost, got %v", err)
-	}
-
-	// Case 3: A candidate that is not processing cannot be updated.
+	// Case 2: A candidate that is not processing cannot be updated.
 	pendingCandidate := newTestCandidate(
 		t,
 		"guild-update",
@@ -469,7 +474,7 @@ func TestCandidateRepositoryUpdateProcessingResult(t *testing.T) {
 		t.Fatalf("expected ErrCandidateOwnershipLost for pending candidate, got %v", err)
 	}
 
-	// Case 4: An expired lock cannot be updated.
+	// Case 3: An expired lock cannot be updated.
 	expiringCandidate := newTestCandidate(
 		t,
 		"guild-update",
@@ -519,5 +524,76 @@ func TestCandidateRepositoryUpdateProcessingResult(t *testing.T) {
 	)
 	if !errors.Is(err, ErrCandidateOwnershipLost) {
 		t.Fatalf("expected ErrCandidateOwnershipLost for expired lock, got %v", err)
+	}
+}
+
+func TestCandidateRepositoryConcurrentClaim(t *testing.T) {
+	repository := setupCandidateRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC()
+
+	candidate := newTestCandidate(
+		t,
+		"guild-concurrent",
+		"channel-concurrent",
+		"message-concurrent",
+		"user-concurrent",
+		now.Add(time.Hour),
+	)
+
+	if err := repository.Create(ctx, candidate); err != nil {
+		t.Fatalf("create candidate: %v", err)
+	}
+
+	const workerCount = 10
+
+	type claimResult struct {
+		candidate *core.MemoryCandidate
+		err       error
+	}
+
+	start := make(chan struct{})
+	results := make(chan claimResult, workerCount)
+
+	for i := 0; i < workerCount; i++ {
+		go func(i int) {
+			<-start
+
+			claimed, err := repository.ClaimNext(
+				ctx,
+				fmt.Sprintf("worker-%d", i),
+				time.Now().UTC(),
+				time.Minute,
+			)
+
+			results <- claimResult{
+				candidate: claimed,
+				err:       err,
+			}
+		}(i)
+	}
+
+	// Start all workers at approximately the same time.
+	close(start)
+
+	successCount := 0
+
+	for i := 0; i < workerCount; i++ {
+		result := <-results
+
+		if result.err != nil {
+			t.Fatalf("claim candidate: %v", result.err)
+		}
+
+		if result.candidate != nil {
+			successCount++
+		}
+	}
+
+	if successCount != 1 {
+		t.Fatalf("expected exactly 1 successful claim, got %d", successCount)
 	}
 }
