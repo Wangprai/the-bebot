@@ -291,3 +291,96 @@ func TestCandidateRepositoryDeleteExpired(t *testing.T) {
 		)
 	}
 }
+
+func TestCandidateRepositoryClaimFailedCandidateAfterRetry(t *testing.T) {
+	repository := setupCandidateRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	candidate := newTestCandidate(
+		t,
+		"guild-retry",
+		"channel-retry",
+		"message-retry",
+		"user-retry",
+		now.Add(time.Hour),
+	)
+
+	if err := repository.Create(ctx, candidate); err != nil {
+		t.Fatalf("create candidate: %v", err)
+	}
+
+	claimed, err := repository.ClaimNext(
+		ctx,
+		"worker-1",
+		now,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("claim candidate: %v", err)
+	}
+
+	if claimed == nil {
+		t.Fatal("expected candidate to be claimed")
+	}
+
+	retryAt := now.Add(time.Minute)
+
+	candidateService := core.NewCandidateService()
+
+	failed, err := candidateService.Fail(
+		*claimed,
+		now,
+		retryAt,
+	)
+	if err != nil {
+		t.Fatalf("fail candidate: %v", err)
+	}
+
+	if err := repository.Update(ctx, failed); err != nil {
+		t.Fatalf("update failed candidate: %v", err)
+	}
+
+	beforeRetry, err := repository.ClaimNext(
+		ctx,
+		"worker-2",
+		retryAt.Add(-time.Second),
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("claim before retry: %v", err)
+	}
+
+	if beforeRetry != nil {
+		t.Fatal("expected no candidate before retry time")
+	}
+
+	retried, err := repository.ClaimNext(
+		ctx,
+		"worker-2",
+		retryAt,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("claim after retry: %v", err)
+	}
+
+	if retried == nil {
+		t.Fatal("expected failed candidate to be claimed after retry time")
+	}
+
+	if retried.Status != core.CandidateStatusProcessing {
+		t.Fatalf("expected processing status, got %s", retried.Status)
+	}
+
+	if retried.WorkerID != "worker-2" {
+		t.Fatalf("expected worker-2, got %s", retried.WorkerID)
+	}
+
+	if retried.Attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", retried.Attempts)
+	}
+}

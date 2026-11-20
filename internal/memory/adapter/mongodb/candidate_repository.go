@@ -113,6 +113,12 @@ func (r *CandidateRepository) ClaimNext(
 				}},
 			},
 			bson.D{
+				{Key: "status", Value: string(core.CandidateStatusFailed)},
+				{Key: "next_retry_at", Value: bson.D{
+					{Key: "$lte", Value: now},
+				}},
+			},
+			bson.D{
 				{Key: "status", Value: string(core.CandidateStatusProcessing)},
 				{Key: "locked_until", Value: bson.D{
 					{Key: "$lte", Value: now},
