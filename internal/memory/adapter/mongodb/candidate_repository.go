@@ -260,10 +260,14 @@ func (r *CandidateRepository) UpdateProcessingResult(
 		return fmt.Errorf("convert candidate document: %w", err)
 	}
 
+	now := time.Now().UTC()
 	filter := bson.D{
 		{Key: "_id", Value: document.ID},
 		{Key: "status", Value: string(core.CandidateStatusProcessing)},
 		{Key: "worker_id", Value: expectedWorkerID},
+		{Key: "locked_until", Value: bson.D{
+			{Key: "$gt", Value: now},
+		}},
 	}
 
 	result, err := r.collection.ReplaceOne(ctx, filter, document)
