@@ -30,7 +30,7 @@ func (m *mockContextProvider) FetchRecentMessages(
 	m.receivedGuildID = guildID
 	m.receivedChannelID = channelID
 	m.receivedLimit = limit
-	
+
 	return m.messages, m.err
 }
 
@@ -61,11 +61,11 @@ func (m *mockConversationService) ValidateContext(
 
 // ResponseGenerator Mock
 type mockResponseGenerator struct {
-    response string
-    err      error
-    called   bool
+	response string
+	err      error
+	called   bool
 
-    receivedContext core.ConversationContext
+	receivedContext core.ConversationContext
 }
 
 func (m *mockResponseGenerator) Generate(
@@ -80,12 +80,12 @@ func (m *mockResponseGenerator) Generate(
 
 // MessageSender Mock
 type mockMessageSender struct {
-    err     error
-    called  bool
-    content string
+	err     error
+	called  bool
+	content string
 
-    receivedGuildID   string
-    receivedChannelID string
+	receivedGuildID   string
+	receivedChannelID string
 }
 
 func (m *mockMessageSender) Send(
@@ -161,11 +161,14 @@ func newTestUseCase() (
 
 	messageSender := &mockMessageSender{}
 
+	candidateCreator := &mockCandidateCreator{}
+
 	useCase := NewHandleMentionUseCase(
 		contextProvider,
 		conversationService,
 		responseGenerator,
 		messageSender,
+		candidateCreator,
 		15,
 		24*time.Hour,
 	)
@@ -331,4 +334,17 @@ func TestEnsureTriggerMessageRespectsLimit(t *testing.T) {
 	if result[0].ID != "message-002" {
 		t.Errorf("expected oldest retained message to be message-002, got %s", result[0].ID)
 	}
+}
+
+type mockCandidateCreator struct {
+	called bool
+	err    error
+}
+
+func (m *mockCandidateCreator) CreateCandidate(
+	ctx context.Context,
+	conversationContext core.ConversationContext,
+) error {
+	m.called = true
+	return m.err
 }

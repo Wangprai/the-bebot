@@ -54,11 +54,14 @@ func TestConversationPipelineIntegration(t *testing.T) {
 	// Simulate Discord message sender.
 	sender := &mockMessageSender{}
 
+	candidateCreator := &mockCandidateCreator{}
+
 	useCase := NewHandleMentionUseCase(
 		provider,
 		conversationService,
 		generator,
 		sender,
+		candidateCreator,
 		15,
 		24*time.Hour,
 	)
@@ -68,7 +71,7 @@ func TestConversationPipelineIntegration(t *testing.T) {
 		t.Fatalf("HandleMention failed: %v", err)
 	}
 
-	// 1. Verify ContextProvider.
+	// Verify ContextProvider.
 	if !provider.called {
 		t.Fatal("ContextProvider was not called")
 	}
@@ -96,7 +99,7 @@ func TestConversationPipelineIntegration(t *testing.T) {
 		)
 	}
 
-	// 2. Verify ResponseGenerator received valid context.
+	// Verify ResponseGenerator received valid context.
 	if !generator.called {
 		t.Fatal("ResponseGenerator was not called")
 	}
@@ -122,7 +125,7 @@ func TestConversationPipelineIntegration(t *testing.T) {
 		)
 	}
 
-	// 3. Verify chronological ordering.
+	// Verify chronological ordering.
 	messages := conversationContext.Messages
 
 	for i := 1; i < len(messages); i++ {
@@ -131,7 +134,7 @@ func TestConversationPipelineIntegration(t *testing.T) {
 		}
 	}
 
-	// 4. Verify trigger message exists.
+	// Verify trigger message exists.
 	lastMessage := messages[len(messages)-1]
 
 	if lastMessage.ID != event.MessageID {
@@ -145,7 +148,7 @@ func TestConversationPipelineIntegration(t *testing.T) {
 		t.Errorf("trigger message content does not match event")
 	}
 
-	// 5. Verify MessageSender.
+	// Verify MessageSender.
 	if !sender.called {
 		t.Fatal("MessageSender was not called")
 	}
@@ -201,12 +204,14 @@ func TestConversationPipelineAddsMissingTrigger(t *testing.T) {
 	}
 
 	sender := &mockMessageSender{}
+	candidateCreator := &mockCandidateCreator{}
 
 	useCase := NewHandleMentionUseCase(
 		provider,
 		conversationService,
 		generator,
 		sender,
+		candidateCreator,
 		15,
 		24*time.Hour,
 	)

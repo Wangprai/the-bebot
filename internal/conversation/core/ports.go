@@ -51,3 +51,10 @@ type MessageSender interface {
 		content string,
 	) (Message, error)
 }
+
+type CandidateCreator interface {
+    CreateCandidate(
+        ctx context.Context,
+        conversationContext ConversationContext,
+    ) error
+}

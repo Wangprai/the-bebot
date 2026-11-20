@@ -16,6 +16,10 @@ import (
 	"the-bebot/internal/platform/config"
 	"the-bebot/internal/platform/database"
 	"the-bebot/internal/platform/logger"
+
+	memoryadapter "the-bebot/internal/memory/adapter/conversation"
+	memorymongodb "the-bebot/internal/memory/adapter/mongodb"
+	memoryapp "the-bebot/internal/memory/app"
 )
 
 const conversationContextTTL = 24 * time.Hour
@@ -125,6 +129,34 @@ func run() error {
 		return fmt.Errorf("initialize Discord client: %w", err)
 	}
 
+	// Initialize Candidate Creator
+	var candidateCreator core.CandidateCreator = app.NoopCandidateCreator{}
+
+	if cfg.Memory.Enabled {
+		candidateRepository, err := memorymongodb.NewCandidateRepository(
+			db.Database,
+		)
+		if err != nil {
+			return fmt.Errorf("initialize candidate repository: %w", err)
+		}
+
+		candidateRules := memoryapp.NewCandidateRules()
+
+		createCandidateUseCase := memoryapp.NewCreateCandidateUseCase(
+			candidateRepository,
+			candidateRules,
+			24*time.Hour,
+		)
+
+		candidateCreator = memoryadapter.NewCandidateCreatorAdapter(
+			createCandidateUseCase,
+		)
+
+		appLogger.Info("Memory candidate creation enabled")
+	} else {
+		appLogger.Info("Memory candidate creation disabled")
+	}
+
 	// Initialize Conversation Service
 	conversationService := core.NewConversationService()
 
@@ -134,6 +166,7 @@ func run() error {
 		conversationService,
 		llmClient,
 		discordClient,
+		candidateCreator,
 		cfg.Conversation.MaxMessages,
 		conversationContextTTL,
 	)

@@ -18,6 +18,7 @@ type HandleMentionUseCase struct {
 	conversationService core.ConversationService
 	responseGenerator   core.ResponseGenerator
 	messageSender       core.MessageSender
+	candidateCreator    core.CandidateCreator
 
 	maxMessages int
 	contextTTL  time.Duration
@@ -28,6 +29,7 @@ func NewHandleMentionUseCase(
 	conversationService core.ConversationService,
 	responseGenerator core.ResponseGenerator,
 	messageSender core.MessageSender,
+	candidateCreator core.CandidateCreator,
 	maxMessages int,
 	contextTTL time.Duration,
 ) *HandleMentionUseCase {
@@ -36,6 +38,7 @@ func NewHandleMentionUseCase(
 		conversationService: conversationService,
 		responseGenerator:   responseGenerator,
 		messageSender:       messageSender,
+		candidateCreator:    candidateCreator,
 		maxMessages:         maxMessages,
 		contextTTL:          contextTTL,
 	}
@@ -113,6 +116,14 @@ func (uc *HandleMentionUseCase) HandleMention(
 	)
 	if err != nil {
 		return fmt.Errorf("send response: %w", err)
+	}
+
+	// Create memory candidate for background processing.
+	if err := uc.candidateCreator.CreateCandidate(
+		ctx,
+		conversationContext,
+	); err != nil {
+		return fmt.Errorf("create memory candidate: %w", err)
 	}
 
 	return nil
