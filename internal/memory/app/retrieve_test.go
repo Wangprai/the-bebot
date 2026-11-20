@@ -246,3 +246,38 @@ func TestRetrieveMemoriesUpdateUsageError(t *testing.T) {
 		t.Fatalf("expected update error, got %v", err)
 	}
 }
+
+func TestRetrieveMemoriesRejectsNilContext(t *testing.T) {
+	repository := &mockMemoryRepository{}
+	useCase := NewRetrieveMemoriesUseCase(repository)
+
+	ctx := context.Context(nil)
+
+	_, err := useCase.Execute(ctx, RetrieveMemoriesInput{
+		GuildID: "guild-001",
+		UserID:  "user-001",
+		Limit:   10,
+	})
+
+	if !errors.Is(err, ErrInvalidRetrievalInput) {
+		t.Fatalf("expected ErrInvalidRetrievalInput, got %v", err)
+	}
+
+	if repository.findCalled {
+		t.Error("repository should not be called")
+	}
+}
+
+func TestRetrieveMemoriesRejectsNilUseCase(t *testing.T) {
+	var useCase *RetrieveMemoriesUseCase
+
+	_, err := useCase.Execute(context.Background(), RetrieveMemoriesInput{
+		GuildID: "guild-001",
+		UserID:  "user-001",
+		Limit:   10,
+	})
+
+	if !errors.Is(err, ErrMemoryRepositoryNil) {
+		t.Fatalf("expected ErrMemoryRepositoryNil, got %v", err)
+	}
+}

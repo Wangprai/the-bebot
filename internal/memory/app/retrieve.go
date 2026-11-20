@@ -39,8 +39,12 @@ func (uc *RetrieveMemoriesUseCase) Execute(
 	ctx context.Context,
 	input RetrieveMemoriesInput,
 ) ([]core.Memory, error) {
-	if uc.repository == nil {
+	if uc == nil || uc.repository == nil {
 		return nil, ErrMemoryRepositoryNil
+	}
+
+	if ctx == nil {
+		return nil, ErrInvalidRetrievalInput
 	}
 
 	input.GuildID = strings.TrimSpace(input.GuildID)

@@ -10,6 +10,7 @@ import (
 
 	"the-bebot/internal/memory/core"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	driver "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -115,6 +116,20 @@ func TestMemoryRepositoryIntegration(t *testing.T) {
 		t.Fatalf("Save member memory failed: %v", err)
 	}
 
+	// Saving the same memory again should return the existing ID.
+	duplicateID, err := repository.Save(ctx, memberMemory)
+	if err != nil {
+		t.Fatalf("Save duplicate memory failed: %v", err)
+	}
+
+	if duplicateID != memberID {
+		t.Fatalf(
+			"expected same memory ID %q, got %q",
+			memberID,
+			duplicateID,
+		)
+	}
+
 	// Save another member's memory.
 	otherMemberMemory := newTestMemory(
 		core.MemoryScopeMember,
@@ -125,6 +140,18 @@ func TestMemoryRepositoryIntegration(t *testing.T) {
 	_, err = repository.Save(ctx, otherMemberMemory)
 	if err != nil {
 		t.Fatalf("Save other member memory failed: %v", err)
+	}
+
+	count, err := repository.collection.CountDocuments(
+		ctx,
+		bson.M{"guild_id": "guild-123"},
+	)
+	if err != nil {
+		t.Fatalf("count memories failed: %v", err)
+	}
+
+	if count != 3 {
+		t.Fatalf("expected 3 memories, got %d", count)
 	}
 
 	if err := repository.EnsureIndexes(ctx); err != nil {
