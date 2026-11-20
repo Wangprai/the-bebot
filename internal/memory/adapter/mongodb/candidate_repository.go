@@ -17,6 +17,7 @@ var (
 	ErrCandidateNotFound      = errors.New("memory candidate not found")
 	ErrCandidateAlreadyExists = errors.New("memory candidate already exists")
 	ErrInvalidCandidateID     = errors.New("invalid memory candidate ID")
+	ErrCandidateOwnershipLost = errors.New("memory candidate ownership lost")
 )
 
 type CandidateRepository struct {
@@ -232,6 +233,51 @@ func (r *CandidateRepository) DeleteExpired(
 	)
 	if err != nil {
 		return fmt.Errorf("delete expired memory candidates: %w", err)
+	}
+
+	return nil
+}
+
+func (r *CandidateRepository) UpdateProcessingResult(
+	ctx context.Context,
+	candidate core.MemoryCandidate,
+	expectedWorkerID string,
+) error {
+	if r == nil || r.collection == nil {
+		return fmt.Errorf("candidate repository is not initialized")
+	}
+
+	if ctx == nil {
+		return fmt.Errorf("context is required")
+	}
+
+	if expectedWorkerID == "" {
+		return fmt.Errorf("expected worker ID is required")
+	}
+
+	document, err := toCandidateDocument(candidate)
+	if err != nil {
+		return fmt.Errorf("convert candidate document: %w", err)
+	}
+
+	filter := bson.D{
+		{Key: "_id", Value: document.ID},
+		{Key: "status", Value: string(core.CandidateStatusProcessing)},
+		{Key: "worker_id", Value: expectedWorkerID},
+	}
+
+	result, err := r.collection.ReplaceOne(ctx, filter, document)
+	if err != nil {
+		return fmt.Errorf("update processing result: %w", err)
+	}
+
+	if result.MatchedCount == 0 {
+		return fmt.Errorf(
+			"%w: candidate %s is no longer owned by worker %s",
+			ErrCandidateOwnershipLost,
+			candidate.ID,
+			expectedWorkerID,
+		)
 	}
 
 	return nil

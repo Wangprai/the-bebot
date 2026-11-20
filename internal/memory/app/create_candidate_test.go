@@ -40,6 +40,14 @@ func (m *mockCandidateRepository) Update(
 	return nil
 }
 
+func (m *mockCandidateRepository) UpdateProcessingResult(
+	ctx context.Context,
+	candidate core.MemoryCandidate,
+	expectedWorkerID string,
+) error {
+	return nil
+}
+
 func (m *mockCandidateRepository) DeleteExpired(
 	ctx context.Context,
 	before time.Time,

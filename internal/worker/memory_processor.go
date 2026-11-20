@@ -83,6 +83,12 @@ func (p *MemoryCandidateProcessor) Process(
 		)
 	}
 
+	workerID := candidate.WorkerID
+
+	if workerID == "" {
+		return errors.New("candidate worker ID is required")
+	}
+
 	snapshot, err := core.NewConversationSnapshot(
 		core.ConversationSnapshot{
 			GuildID:          candidate.GuildID,
@@ -92,7 +98,12 @@ func (p *MemoryCandidateProcessor) Process(
 		},
 	)
 	if err != nil {
-		return p.fail(ctx, candidate, fmt.Errorf("build snapshot: %w", err))
+		return p.fail(
+			ctx,
+			candidate,
+			workerID,
+			fmt.Errorf("build snapshot: %w", err),
+		)
 	}
 
 	memories, err := p.extractionUseCase.Execute(
@@ -103,33 +114,40 @@ func (p *MemoryCandidateProcessor) Process(
 		},
 	)
 	if err != nil {
-		return p.fail(ctx, candidate, fmt.Errorf("extract memories: %w", err))
+		return p.fail(
+			ctx,
+			candidate,
+			workerID,
+			fmt.Errorf("extract memories: %w", err),
+		)
 	}
 
 	if len(memories) == 0 {
-		return p.reject(ctx, candidate)
+		return p.reject(ctx, candidate, workerID)
 	}
 
 	for _, memory := range memories {
 		if err := ctx.Err(); err != nil {
-			return p.fail(ctx, candidate, err)
+			return p.fail(ctx, candidate, workerID, err)
 		}
 
 		if _, err := p.memoryRepository.Save(ctx, memory); err != nil {
 			return p.fail(
 				ctx,
 				candidate,
+				workerID,
 				fmt.Errorf("save memory: %w", err),
 			)
 		}
 	}
 
-	return p.complete(ctx, candidate)
+	return p.complete(ctx, candidate, workerID)
 }
 
 func (p *MemoryCandidateProcessor) complete(
 	ctx context.Context,
 	candidate core.MemoryCandidate,
+	workerID string,
 ) error {
 	now := p.clock().UTC()
 
@@ -138,7 +156,11 @@ func (p *MemoryCandidateProcessor) complete(
 		return fmt.Errorf("complete candidate: %w", err)
 	}
 
-	if err := p.candidateRepository.Update(ctx, updated); err != nil {
+	if err := p.candidateRepository.UpdateProcessingResult(
+		ctx,
+		updated,
+		workerID,
+	); err != nil {
 		return fmt.Errorf("persist completed candidate: %w", err)
 	}
 
@@ -148,6 +170,7 @@ func (p *MemoryCandidateProcessor) complete(
 func (p *MemoryCandidateProcessor) reject(
 	ctx context.Context,
 	candidate core.MemoryCandidate,
+	workerID string,
 ) error {
 	now := p.clock().UTC()
 
@@ -156,7 +179,11 @@ func (p *MemoryCandidateProcessor) reject(
 		return fmt.Errorf("reject candidate: %w", err)
 	}
 
-	if err := p.candidateRepository.Update(ctx, updated); err != nil {
+	if err := p.candidateRepository.UpdateProcessingResult(
+		ctx,
+		updated,
+		workerID,
+	); err != nil {
 		return fmt.Errorf("persist rejected candidate: %w", err)
 	}
 
@@ -166,14 +193,13 @@ func (p *MemoryCandidateProcessor) reject(
 func (p *MemoryCandidateProcessor) fail(
 	ctx context.Context,
 	candidate core.MemoryCandidate,
+	workerID string,
 	cause error,
 ) error {
 	now := p.clock().UTC()
 
 	retryAt := now.Add(p.retryDuration(candidate.Attempts))
 
-	// เมื่อถึงจำนวน Attempts สูงสุด จะไม่ Retry อีก
-	// กำหนด next_retry_at เป็น expire_at เพื่อรอการลบตาม TTL
 	if candidate.Attempts >= p.maxAttempts {
 		retryAt = candidate.ExpireAt
 	}
@@ -190,7 +216,11 @@ func (p *MemoryCandidateProcessor) fail(
 		)
 	}
 
-	if err := p.candidateRepository.Update(ctx, updated); err != nil {
+	if err := p.candidateRepository.UpdateProcessingResult(
+		ctx,
+		updated,
+		workerID,
+	); err != nil {
 		return errors.Join(
 			cause,
 			fmt.Errorf("persist failed candidate: %w", err),

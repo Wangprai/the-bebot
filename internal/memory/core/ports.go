@@ -57,6 +57,12 @@ type CandidateRepository interface {
 		ctx context.Context,
 		before time.Time,
 	) error
+
+	UpdateProcessingResult(
+		ctx context.Context,
+		candidate MemoryCandidate,
+		expectedWorkerID string,
+	) error
 }
 
 type MemoryExtractor interface {

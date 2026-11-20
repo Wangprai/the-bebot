@@ -95,8 +95,9 @@ func (m *mockProcessorMemoryRepository) DeleteByID(
 }
 
 type mockProcessorCandidateRepository struct {
-	updated   []core.MemoryCandidate
-	updateErr error
+	updated          []core.MemoryCandidate
+	updatedWorkerIDs []string
+	updateErr        error
 }
 
 func (m *mockProcessorCandidateRepository) Create(
@@ -124,6 +125,21 @@ func (m *mockProcessorCandidateRepository) Update(
 	}
 
 	m.updated = append(m.updated, candidate)
+	return nil
+}
+
+func (m *mockProcessorCandidateRepository) UpdateProcessingResult(
+	ctx context.Context,
+	candidate core.MemoryCandidate,
+	expectedWorkerID string,
+) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
+
+	m.updated = append(m.updated, candidate)
+	m.updatedWorkerIDs = append(m.updatedWorkerIDs, expectedWorkerID)
+
 	return nil
 }
 
