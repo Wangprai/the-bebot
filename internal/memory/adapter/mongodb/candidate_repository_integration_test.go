@@ -384,3 +384,140 @@ func TestCandidateRepositoryClaimFailedCandidateAfterRetry(t *testing.T) {
 		t.Fatalf("expected 2 attempts, got %d", retried.Attempts)
 	}
 }
+
+
+func TestCandidateRepositoryUpdateProcessingResult(t *testing.T) {
+	repository := setupCandidateRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	candidate := newTestCandidate(
+		t,
+		"guild-update",
+		"channel-update",
+		"message-update",
+		"user-update",
+		now.Add(time.Hour),
+	)
+
+	if err := repository.Create(ctx, candidate); err != nil {
+		t.Fatalf("create candidate: %v", err)
+	}
+
+	claimed, err := repository.ClaimNext(
+		ctx,
+		"worker-1",
+		now,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("claim candidate: %v", err)
+	}
+
+	if claimed == nil {
+		t.Fatal("expected candidate to be claimed")
+	}
+
+	candidateService := core.NewCandidateService()
+
+	// Case 1: The current owner can save the processing result.
+	completed, err := candidateService.Complete(*claimed, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("complete candidate: %v", err)
+	}
+
+	if err := repository.UpdateProcessingResult(
+		ctx,
+		completed,
+		"worker-1",
+	); err != nil {
+		t.Fatalf("expected current worker to update candidate: %v", err)
+	}
+
+	// Case 2: A different worker cannot update the candidate.
+	err = repository.UpdateProcessingResult(
+		ctx,
+		completed,
+		"worker-2",
+	)
+	if !errors.Is(err, ErrCandidateOwnershipLost) {
+		t.Fatalf("expected ErrCandidateOwnershipLost, got %v", err)
+	}
+
+	// Case 3: A candidate that is not processing cannot be updated.
+	pendingCandidate := newTestCandidate(
+		t,
+		"guild-update",
+		"channel-update",
+		"message-pending",
+		"user-update",
+		now.Add(time.Hour),
+	)
+
+	if err := repository.Create(ctx, pendingCandidate); err != nil {
+		t.Fatalf("create pending candidate: %v", err)
+	}
+
+	err = repository.UpdateProcessingResult(
+		ctx,
+		pendingCandidate,
+		"worker-1",
+	)
+	if !errors.Is(err, ErrCandidateOwnershipLost) {
+		t.Fatalf("expected ErrCandidateOwnershipLost for pending candidate, got %v", err)
+	}
+
+	// Case 4: An expired lock cannot be updated.
+	expiringCandidate := newTestCandidate(
+		t,
+		"guild-update",
+		"channel-update",
+		"message-expired-lock",
+		"user-update",
+		now.Add(time.Hour),
+	)
+
+	if err := repository.Create(ctx, expiringCandidate); err != nil {
+		t.Fatalf("create expiring candidate: %v", err)
+	}
+
+	expiringClaim, err := repository.ClaimNext(
+		ctx,
+		"worker-3",
+		now,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("claim expiring candidate: %v", err)
+	}
+
+	if expiringClaim == nil {
+		t.Fatal("expected expiring candidate to be claimed")
+	}
+
+	expiredLock := now.Add(-time.Minute)
+	expiringClaim.LockedUntil = &expiredLock
+
+	if err := repository.Update(ctx, *expiringClaim); err != nil {
+		t.Fatalf("update expired lock: %v", err)
+	}
+
+	expiredResult, err := candidateService.Complete(
+		*expiringClaim,
+		now.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("complete expired candidate: %v", err)
+	}
+
+	err = repository.UpdateProcessingResult(
+		ctx,
+		expiredResult,
+		"worker-3",
+	)
+	if !errors.Is(err, ErrCandidateOwnershipLost) {
+		t.Fatalf("expected ErrCandidateOwnershipLost for expired lock, got %v", err)
+	}
+}
