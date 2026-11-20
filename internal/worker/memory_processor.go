@@ -202,6 +202,10 @@ func (p *MemoryCandidateProcessor) fail(
 
 	if candidate.Attempts >= p.maxAttempts {
 		retryAt = candidate.ExpireAt
+
+		if !retryAt.After(now) {
+			retryAt = now.Add(maxRetryDelay)
+		}
 	}
 
 	updated, err := p.candidateService.Fail(

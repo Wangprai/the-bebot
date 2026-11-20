@@ -26,12 +26,18 @@ func (m *mockCandidateRules) ShouldCreateCandidate(
 type mockMemoryExtractor struct {
 	memories []core.ExtractedMemory
 	err      error
+	cancel   context.CancelFunc
 }
 
 func (m *mockMemoryExtractor) Extract(
 	ctx context.Context,
 	input core.ExtractionInput,
 ) ([]core.ExtractedMemory, error) {
+	if m.cancel != nil {
+		m.cancel()
+		return nil, ctx.Err()
+	}
+
 	return m.memories, m.err
 }
 
@@ -133,6 +139,10 @@ func (m *mockProcessorCandidateRepository) UpdateProcessingResult(
 	candidate core.MemoryCandidate,
 	expectedWorkerID string,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if m.updateErr != nil {
 		return m.updateErr
 	}
@@ -547,6 +557,57 @@ func TestMemoryCandidateProcessorCompleteError(t *testing.T) {
 	}
 }
 
+func TestMemoryCandidateProcessorContextCanceledDuringExtraction(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	extractionUseCase := memoryapp.NewExtractMemoriesUseCase(
+		&mockCandidateRules{
+			shouldCreate: true,
+		},
+		&mockMemoryExtractor{
+			cancel: cancel,
+		},
+		&mockMemoryValidator{},
+	)
+
+	memoryRepo := &mockProcessorMemoryRepository{}
+	candidateRepo := &mockProcessorCandidateRepository{}
+
+	processor, err := NewMemoryCandidateProcessor(
+		extractionUseCase,
+		memoryRepo,
+		candidateRepo,
+		core.NewCandidateService(),
+	)
+	if err != nil {
+		t.Fatalf("create processor: %v", err)
+	}
+
+	err = processor.Process(
+		ctx,
+		newProcessorTestCandidate(t),
+	)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	if len(memoryRepo.saved) != 0 {
+		t.Fatalf(
+			"expected no saved memories, got %d",
+			len(memoryRepo.saved),
+		)
+	}
+
+	if len(candidateRepo.updated) != 0 {
+		t.Fatalf(
+			"expected no persisted candidate, got %d",
+			len(candidateRepo.updated),
+		)
+	}
+}
+
 func TestMemoryCandidateProcessorRejectError(t *testing.T) {
 	extractionUseCase := newProcessorTestExtractor(
 		[]core.ExtractedMemory{},
@@ -637,5 +698,62 @@ func TestMemoryCandidateProcessorMaxAttempts(t *testing.T) {
 
 	if updated.WorkerID != "" {
 		t.Fatal("expected worker ID to be cleared")
+	}
+}
+
+func TestMemoryCandidateProcessorOwnershipLost(t *testing.T) {
+	ownershipErr := errors.New("memory candidate ownership lost")
+
+	candidate := newProcessorTestCandidate(t)
+
+	extractionUseCase := newProcessorTestExtractor(
+		[]core.ExtractedMemory{
+			{
+				Scope:           core.MemoryScopeMember,
+				Type:            core.MemoryTypePreference,
+				Content:         "User likes Go programming",
+				Importance:      3,
+				Confidence:      0.9,
+				SourceMessageID: "message-123",
+			},
+		},
+		nil,
+		newProcessorTestMemory(t),
+	)
+
+	memoryRepo := &mockProcessorMemoryRepository{}
+
+	candidateRepo := &mockProcessorCandidateRepository{
+		updateErr: ownershipErr,
+	}
+
+	processor, err := NewMemoryCandidateProcessor(
+		extractionUseCase,
+		memoryRepo,
+		candidateRepo,
+		core.NewCandidateService(),
+	)
+	if err != nil {
+		t.Fatalf("create processor: %v", err)
+	}
+
+	err = processor.Process(context.Background(), candidate)
+
+	if !errors.Is(err, ownershipErr) {
+		t.Fatalf("expected ownership error, got %v", err)
+	}
+
+	if len(memoryRepo.saved) != 1 {
+		t.Fatalf(
+			"expected 1 saved memory, got %d",
+			len(memoryRepo.saved),
+		)
+	}
+
+	if len(candidateRepo.updated) != 0 {
+		t.Fatalf(
+			"expected no successful candidate update, got %d",
+			len(candidateRepo.updated),
+		)
 	}
 }
