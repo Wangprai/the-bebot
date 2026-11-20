@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -18,7 +19,10 @@ type Gateway struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu        sync.RWMutex
+	mu          sync.RWMutex
+	lifecycleMu sync.Mutex
+	handlerWG   sync.WaitGroup
+
 	botUserID string
 
 	started bool
@@ -89,6 +93,9 @@ func (g *Gateway) Start(ctx context.Context) error {
 		return fmt.Errorf("gateway context is required")
 	}
 
+	g.lifecycleMu.Lock()
+	defer g.lifecycleMu.Unlock()
+
 	g.mu.Lock()
 
 	if g.started {
@@ -106,6 +113,11 @@ func (g *Gateway) Start(ctx context.Context) error {
 		return fmt.Errorf("mention handler is required")
 	}
 
+	if err := ctx.Err(); err != nil {
+		g.mu.Unlock()
+		return fmt.Errorf("gateway context is canceled: %w", err)
+	}
+
 	g.ctx, g.cancel = context.WithCancel(ctx)
 	g.started = true
 
@@ -113,10 +125,15 @@ func (g *Gateway) Start(ctx context.Context) error {
 
 	if err := g.session.Open(); err != nil {
 		g.mu.Lock()
-		g.cancel()
+
+		if g.cancel != nil {
+			g.cancel()
+		}
+
 		g.ctx = nil
 		g.cancel = nil
 		g.started = false
+
 		g.mu.Unlock()
 
 		return fmt.Errorf("open discord gateway: %w", err)
@@ -129,6 +146,9 @@ func (g *Gateway) Start(ctx context.Context) error {
 
 func (g *Gateway) Close() error {
 	g.closeOnce.Do(func() {
+		g.lifecycleMu.Lock()
+		defer g.lifecycleMu.Unlock()
+
 		g.mu.Lock()
 
 		g.closed = true
@@ -149,7 +169,28 @@ func (g *Gateway) Close() error {
 					"close discord gateway: %w",
 					err,
 				)
-				return
+			}
+		}
+
+		done := make(chan struct{})
+
+		go func() {
+			g.handlerWG.Wait()
+			close(done)
+		}()
+
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
+
+		select {
+		case <-done:
+			g.logger.Info("All mention handlers completed")
+
+		case <-timer.C:
+			if g.closeErr == nil {
+				g.closeErr = fmt.Errorf(
+					"timeout waiting for mention handlers to finish",
+				)
 			}
 		}
 
@@ -253,6 +294,28 @@ func (g *Gateway) handleMessageCreate(
 		"message_id", mentionEvent.MessageID,
 		"user_id", mentionEvent.UserID,
 	)
+
+	g.mu.Lock()
+
+	// Recheck gateway state before registering the handler.
+	if g.closed || g.ctx == nil || g.ctx.Err() != nil {
+		g.mu.Unlock()
+		return
+	}
+
+	ctx = g.ctx
+	handler = g.mentionHandler
+
+	if handler == nil {
+		g.mu.Unlock()
+		g.logger.Error("Mention handler is not configured")
+		return
+	}
+
+	g.handlerWG.Add(1)
+	g.mu.Unlock()
+
+	defer g.handlerWG.Done()
 
 	if err := handler.HandleMention(ctx, mentionEvent); err != nil {
 		g.logger.Error(
