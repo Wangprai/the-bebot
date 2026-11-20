@@ -169,6 +169,7 @@ func newTestUseCase() (
 		responseGenerator,
 		messageSender,
 		candidateCreator,
+		nil,
 		15,
 		24*time.Hour,
 	)

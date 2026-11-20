@@ -141,11 +141,19 @@ func (e MentionEvent) Validate() error {
 	return nil
 }
 
+type MemoryContext struct {
+	Scope      string
+	Type       string
+	Content    string
+	Importance int
+}
+
 type ConversationContext struct {
 	GuildID          string
 	ChannelID        string
 	TriggerMessageID string
 	Messages         []Message
+	Memories         []MemoryContext
 	CreatedAt        time.Time
 	ExpiresAt        time.Time
 }

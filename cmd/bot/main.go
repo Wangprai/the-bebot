@@ -138,6 +138,7 @@ func run() error {
 
 	// Initialize Candidate Creator
 	var candidateCreator core.CandidateCreator = app.NoopCandidateCreator{}
+	var retrieveMemories *memoryapp.RetrieveMemoriesUseCase
 
 	if cfg.Memory.Enabled {
 		// Initialize Memory Repository
@@ -147,6 +148,11 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("initialize memory repository: %w", err)
 		}
+
+		// Initialize Retrieve Memories Use Case
+		retrieveMemories = memoryapp.NewRetrieveMemoriesUseCase(
+			memoryRepository,
+		)
 
 		// Initialize Candidate Repository
 		candidateRepository, err := memorymongodb.NewCandidateRepository(
@@ -279,6 +285,7 @@ func run() error {
 		llmClient,
 		discordClient,
 		candidateCreator,
+		retrieveMemories,
 		cfg.Conversation.MaxMessages,
 		conversationContextTTL,
 	)

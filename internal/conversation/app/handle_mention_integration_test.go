@@ -62,6 +62,7 @@ func TestConversationPipelineIntegration(t *testing.T) {
 		generator,
 		sender,
 		candidateCreator,
+		nil,
 		15,
 		24*time.Hour,
 	)
@@ -212,6 +213,7 @@ func TestConversationPipelineAddsMissingTrigger(t *testing.T) {
 		generator,
 		sender,
 		candidateCreator,
+		nil,
 		15,
 		24*time.Hour,
 	)
