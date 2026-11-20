@@ -1,4 +1,3 @@
-
 package config
 
 import (
@@ -41,8 +40,8 @@ type LLMConfig struct {
 }
 
 type ConversationConfig struct {
-	Timeout      time.Duration
-	MaxMessages  int
+	Timeout     time.Duration
+	MaxMessages int
 }
 
 type MemoryConfig struct {

@@ -341,12 +341,12 @@ func TestGenerateWithoutMemoriesKeepsDefaultSystemPrompt(t *testing.T) {
 			systemPrompt := request.Messages[0].Content
 
 			if systemPrompt != strings.TrimSpace(defaultSystemPrompt) {
-	t.Errorf(
-		"system prompt changed without memories:\n got: %q\nwant: %q",
-		systemPrompt,
-		strings.TrimSpace(defaultSystemPrompt),
-	)
-}
+				t.Errorf(
+					"system prompt changed without memories:\n got: %q\nwant: %q",
+					systemPrompt,
+					strings.TrimSpace(defaultSystemPrompt),
+				)
+			}
 
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{

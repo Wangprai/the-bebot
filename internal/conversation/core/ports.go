@@ -53,8 +53,8 @@ type MessageSender interface {
 }
 
 type CandidateCreator interface {
-    CreateCandidate(
-        ctx context.Context,
-        conversationContext ConversationContext,
-    ) error
+	CreateCandidate(
+		ctx context.Context,
+		conversationContext ConversationContext,
+	) error
 }
