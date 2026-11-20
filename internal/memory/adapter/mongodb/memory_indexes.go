@@ -38,6 +38,19 @@ func (r *MemoryRepository) EnsureIndexes(ctx context.Context) error {
 			},
 			Options: options.Index().SetName("idx_memories_member_relevance"),
 		},
+		{
+			Keys: bson.D{
+				{Key: "idempotency_key", Value: 1},
+			},
+			Options: options.Index().
+				SetName("idx_memories_idempotency").
+				SetUnique(true).
+				SetPartialFilterExpression(bson.M{
+					"idempotency_key": bson.M{
+						"$type": "string",
+					},
+				}),
+		},
 	}
 
 	_, err := r.collection.Indexes().CreateMany(ctx, indexes)

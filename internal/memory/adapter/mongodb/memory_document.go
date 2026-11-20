@@ -1,6 +1,9 @@
 package mongodb
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -20,6 +23,7 @@ type memoryDocument struct {
 	Tags            []string           `bson:"tags"`
 	SourceMessageID string             `bson:"source_message_id"`
 	UsageCount      int                `bson:"usage_count"`
+	IdempotencyKey  string             `bson:"idempotency_key,omitempty"`
 	LastUsedAt      *time.Time         `bson:"last_used_at"`
 	CreatedAt       time.Time          `bson:"created_at"`
 	UpdatedAt       time.Time          `bson:"updated_at"`
@@ -68,4 +72,19 @@ func (d memoryDocument) toDomain() (core.Memory, error) {
 		CreatedAt:       d.CreatedAt,
 		UpdatedAt:       d.UpdatedAt,
 	})
+}
+
+func newMemoryIdempotencyKey(memory core.Memory) string {
+	identity := strings.Join([]string{
+		memory.GuildID,
+		memory.SourceMessageID,
+		string(memory.Scope),
+		string(memory.Type),
+		memory.UserID,
+		memory.Content,
+	}, "\x00")
+
+	hash := sha256.Sum256([]byte(identity))
+
+	return hex.EncodeToString(hash[:])
 }

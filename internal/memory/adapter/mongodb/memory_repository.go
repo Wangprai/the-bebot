@@ -53,16 +53,35 @@ func (r *MemoryRepository) Save(
 	}
 
 	document := toMemoryDocument(validated)
+	document.ID = primitive.NewObjectID()
+	document.IdempotencyKey = newMemoryIdempotencyKey(validated)
 
-	objectID := primitive.NewObjectID()
-	document.ID = objectID
-
-	_, err = r.collection.InsertOne(ctx, document)
-	if err != nil {
-		return "", fmt.Errorf("insert memory: %w", err)
+	filter := bson.M{
+		"idempotency_key": document.IdempotencyKey,
 	}
 
-	return objectID.Hex(), nil
+	update := bson.M{
+		"$setOnInsert": document,
+	}
+
+	_, err = r.collection.UpdateOne(
+		ctx,
+		filter,
+		update,
+		options.Update().SetUpsert(true),
+	)
+
+	if err != nil && !mongo.IsDuplicateKeyError(err) {
+		return "", fmt.Errorf("upsert memory: %w", err)
+	}
+
+	var saved memoryDocument
+
+	if err := r.collection.FindOne(ctx, filter).Decode(&saved); err != nil {
+		return "", fmt.Errorf("find saved memory: %w", err)
+	}
+
+	return saved.ID.Hex(), nil
 }
 
 func (r *MemoryRepository) FindByID(
