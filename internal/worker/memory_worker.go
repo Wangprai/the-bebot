@@ -163,26 +163,77 @@ func (w *MemoryWorker) run(
 	ctx context.Context,
 	workerID string,
 ) {
-	ticker := time.NewTicker(w.pollInterval)
-	defer ticker.Stop()
-
 	w.logger.Info(
 		"Memory worker running",
 		"worker_id", workerID,
 	)
 
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			w.logger.Info(
 				"Memory worker shutting down",
 				"worker_id", workerID,
 			)
 			return
-
-		case <-ticker.C:
-			// Candidate processing will be implemented
-			// in the next step.
 		}
+
+		now := time.Now().UTC()
+
+		candidate, err := w.repository.ClaimNext(
+			ctx,
+			workerID,
+			now,
+			w.lockDuration,
+		)
+
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+
+			w.logger.Error(
+				"Failed to claim memory candidate",
+				"worker_id", workerID,
+				"error", err,
+			)
+
+			if !w.wait(ctx, w.pollInterval) {
+				return
+			}
+
+			continue
+		}
+
+		if candidate == nil {
+			if !w.wait(ctx, w.pollInterval) {
+				return
+			}
+
+			continue
+		}
+
+		if err := w.processor.Process(ctx, *candidate); err != nil {
+			w.logger.Error(
+				"Failed to process memory candidate",
+				"worker_id", workerID,
+				"candidate_id", candidate.ID,
+				"error", err,
+			)
+		}
+	}
+}
+
+func (w *MemoryWorker) wait(
+	ctx context.Context,
+	duration time.Duration,
+) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
