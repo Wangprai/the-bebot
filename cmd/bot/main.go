@@ -140,6 +140,21 @@ func run() error {
 			return fmt.Errorf("initialize candidate repository: %w", err)
 		}
 
+		indexCtx, indexCancel := context.WithTimeout(
+			ctx,
+			10*time.Second,
+		)
+
+		err = candidateRepository.EnsureIndexes(indexCtx)
+
+		indexCancel()
+
+		if err != nil {
+			return fmt.Errorf("ensure candidate indexes: %w", err)
+		}
+
+		appLogger.Info("Memory candidate indexes ensured")
+
 		candidateRules := memoryapp.NewCandidateRules()
 
 		createCandidateUseCase := memoryapp.NewCreateCandidateUseCase(
