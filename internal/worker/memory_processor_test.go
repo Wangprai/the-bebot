@@ -278,6 +278,20 @@ func TestMemoryCandidateProcessorSuccess(t *testing.T) {
 		t.Fatalf("expected 1 candidate update, got %d", len(candidateRepo.updated))
 	}
 
+	if len(candidateRepo.updatedWorkerIDs) != 1 {
+		t.Fatalf(
+			"expected 1 worker ID, got %d",
+			len(candidateRepo.updatedWorkerIDs),
+		)
+	}
+
+	if candidateRepo.updatedWorkerIDs[0] != "worker-1" {
+		t.Fatalf(
+			"expected worker ID worker-1, got %s",
+			candidateRepo.updatedWorkerIDs[0],
+		)
+	}
+
 	if candidateRepo.updated[0].Status != core.CandidateStatusCompleted {
 		t.Fatalf(
 			"expected completed status, got %s",
@@ -483,5 +497,145 @@ func TestMemoryCandidateProcessorRespectsCanceledContext(t *testing.T) {
 	err = processor.Process(ctx, newProcessorTestCandidate(t))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestMemoryCandidateProcessorCompleteError(t *testing.T) {
+	memory := newProcessorTestMemory(t)
+
+	extraction := core.ExtractedMemory{
+		Scope:           core.MemoryScopeMember,
+		Type:            core.MemoryTypePreference,
+		Content:         "User likes Go programming",
+		Importance:      3,
+		Confidence:      0.9,
+		SourceMessageID: "message-123",
+	}
+
+	extractionUseCase := newProcessorTestExtractor(
+		[]core.ExtractedMemory{extraction},
+		nil,
+		memory,
+	)
+
+	memoryRepo := &mockProcessorMemoryRepository{}
+	candidateRepo := &mockProcessorCandidateRepository{
+		updateErr: errors.New("database unavailable"),
+	}
+
+	processor, err := NewMemoryCandidateProcessor(
+		extractionUseCase,
+		memoryRepo,
+		candidateRepo,
+		core.NewCandidateService(),
+	)
+	if err != nil {
+		t.Fatalf("create processor: %v", err)
+	}
+
+	err = processor.Process(context.Background(), newProcessorTestCandidate(t))
+	if err == nil {
+		t.Fatal("expected complete error")
+	}
+
+	if len(memoryRepo.saved) != 1 {
+		t.Fatalf("expected 1 saved memory, got %d", len(memoryRepo.saved))
+	}
+
+	if len(candidateRepo.updated) != 0 {
+		t.Fatalf("expected no persisted candidate, got %d", len(candidateRepo.updated))
+	}
+}
+
+func TestMemoryCandidateProcessorRejectError(t *testing.T) {
+	extractionUseCase := newProcessorTestExtractor(
+		[]core.ExtractedMemory{},
+		nil,
+		core.Memory{},
+	)
+
+	memoryRepo := &mockProcessorMemoryRepository{}
+	candidateRepo := &mockProcessorCandidateRepository{
+		updateErr: errors.New("database unavailable"),
+	}
+
+	processor, err := NewMemoryCandidateProcessor(
+		extractionUseCase,
+		memoryRepo,
+		candidateRepo,
+		core.NewCandidateService(),
+	)
+	if err != nil {
+		t.Fatalf("create processor: %v", err)
+	}
+
+	err = processor.Process(context.Background(), newProcessorTestCandidate(t))
+	if err == nil {
+		t.Fatal("expected reject error")
+	}
+
+	if len(memoryRepo.saved) != 0 {
+		t.Fatalf("expected no saved memories, got %d", len(memoryRepo.saved))
+	}
+
+	if len(candidateRepo.updated) != 0 {
+		t.Fatalf("expected no persisted candidate, got %d", len(candidateRepo.updated))
+	}
+}
+
+func TestMemoryCandidateProcessorMaxAttempts(t *testing.T) {
+	extractionUseCase := newProcessorTestExtractor(
+		nil,
+		errors.New("LLM unavailable"),
+		core.Memory{},
+	)
+
+	memoryRepo := &mockProcessorMemoryRepository{}
+	candidateRepo := &mockProcessorCandidateRepository{}
+
+	processor, err := NewMemoryCandidateProcessor(
+		extractionUseCase,
+		memoryRepo,
+		candidateRepo,
+		core.NewCandidateService(),
+	)
+	if err != nil {
+		t.Fatalf("create processor: %v", err)
+	}
+
+	candidate := newProcessorTestCandidate(t)
+	candidate.Attempts = defaultMaxAttempts
+
+	err = processor.Process(context.Background(), candidate)
+	if err == nil {
+		t.Fatal("expected extraction error")
+	}
+
+	if len(candidateRepo.updated) != 1 {
+		t.Fatalf(
+			"expected 1 candidate update, got %d",
+			len(candidateRepo.updated),
+		)
+	}
+
+	updated := candidateRepo.updated[0]
+
+	if updated.Status != core.CandidateStatusFailed {
+		t.Fatalf(
+			"expected failed status, got %s",
+			updated.Status,
+		)
+	}
+
+	if !updated.NextRetryAt.Equal(candidate.ExpireAt) {
+		t.Fatalf(
+			"expected retry time %v, got %v",
+			candidate.ExpireAt,
+			updated.NextRetryAt,
+		)
+	}
+
+	if updated.WorkerID != "" {
+		t.Fatal("expected worker ID to be cleared")
 	}
 }

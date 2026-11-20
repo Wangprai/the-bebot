@@ -16,13 +16,20 @@ import (
 	"the-bebot/internal/platform/config"
 	"the-bebot/internal/platform/database"
 	"the-bebot/internal/platform/logger"
+	"the-bebot/internal/worker"
 
 	memoryadapter "the-bebot/internal/memory/adapter/conversation"
 	memorymongodb "the-bebot/internal/memory/adapter/mongodb"
 	memoryapp "the-bebot/internal/memory/app"
+	memorycore "the-bebot/internal/memory/core"
 )
 
-const conversationContextTTL = 24 * time.Hour
+const (
+	conversationContextTTL = 24 * time.Hour
+	memoryCandidateTTL     = 24 * time.Hour
+	memoryPollInterval     = 5 * time.Second
+	memoryLockDuration     = 2 * time.Minute
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -133,6 +140,15 @@ func run() error {
 	var candidateCreator core.CandidateCreator = app.NoopCandidateCreator{}
 
 	if cfg.Memory.Enabled {
+		// Initialize Memory Repository
+		memoryRepository, err := memorymongodb.NewMemoryRepository(
+			db.Database,
+		)
+		if err != nil {
+			return fmt.Errorf("initialize memory repository: %w", err)
+		}
+
+		// Initialize Candidate Repository
 		candidateRepository, err := memorymongodb.NewCandidateRepository(
 			db.Database,
 		)
@@ -140,32 +156,113 @@ func run() error {
 			return fmt.Errorf("initialize candidate repository: %w", err)
 		}
 
+		// Ensure Memory Indexes
 		indexCtx, indexCancel := context.WithTimeout(
 			ctx,
 			10*time.Second,
 		)
 
-		err = candidateRepository.EnsureIndexes(indexCtx)
+		err = memoryRepository.EnsureIndexes(indexCtx)
+		indexCancel()
 
+		if err != nil {
+			return fmt.Errorf("ensure memory indexes: %w", err)
+		}
+
+		// Ensure Candidate Indexes
+		indexCtx, indexCancel = context.WithTimeout(
+			ctx,
+			10*time.Second,
+		)
+
+		err = candidateRepository.EnsureIndexes(indexCtx)
 		indexCancel()
 
 		if err != nil {
 			return fmt.Errorf("ensure candidate indexes: %w", err)
 		}
 
-		appLogger.Info("Memory candidate indexes ensured")
+		appLogger.Info("Memory indexes ensured")
 
+		// Initialize Candidate Rules
 		candidateRules := memoryapp.NewCandidateRules()
 
+		// Initialize Candidate Creation Use Case
 		createCandidateUseCase := memoryapp.NewCreateCandidateUseCase(
 			candidateRepository,
 			candidateRules,
-			24*time.Hour,
+			memoryCandidateTTL,
 		)
 
 		candidateCreator = memoryadapter.NewCandidateCreatorAdapter(
 			createCandidateUseCase,
 		)
+
+		// Initialize Memory Extractor
+		memoryExtractor, err := llm.NewMemoryExtractor(llmClient)
+		if err != nil {
+			return fmt.Errorf("initialize memory extractor: %w", err)
+		}
+
+		// Initialize Memory Validator
+		memoryValidator := memoryapp.NewMemoryValidator()
+
+		// Initialize Extraction Use Case
+		extractionUseCase := memoryapp.NewExtractMemoriesUseCase(
+			candidateRules,
+			memoryExtractor,
+			memoryValidator,
+		)
+
+		// Initialize Candidate Processor
+		candidateProcessor, err := worker.NewMemoryCandidateProcessor(
+			extractionUseCase,
+			memoryRepository,
+			candidateRepository,
+			memorycore.NewCandidateService(),
+		)
+		if err != nil {
+			return fmt.Errorf("initialize memory candidate processor: %w", err)
+		}
+
+		// Initialize Memory Worker
+		memoryWorker, err := worker.NewMemoryWorker(
+			candidateRepository,
+			candidateProcessor,
+			cfg.Memory.WorkerCount,
+			memoryPollInterval,
+			memoryLockDuration,
+			appLogger,
+		)
+		if err != nil {
+			return fmt.Errorf("initialize memory worker: %w", err)
+		}
+
+		// Start Memory Worker
+		if err := memoryWorker.Start(ctx); err != nil {
+			return fmt.Errorf("start memory worker: %w", err)
+		}
+
+		appLogger.Info(
+			"Memory worker started",
+			"workers", cfg.Memory.WorkerCount,
+		)
+
+		// Memory Worker cleanup
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(
+				context.Background(),
+				30*time.Second,
+			)
+			defer cancel()
+
+			if err := memoryWorker.Stop(shutdownCtx); err != nil {
+				appLogger.Error(
+					"Failed to stop memory worker",
+					"error", err,
+				)
+			}
+		}()
 
 		appLogger.Info("Memory candidate creation enabled")
 	} else {
@@ -195,8 +292,6 @@ func run() error {
 	if err := discordGateway.Start(ctx); err != nil {
 		return fmt.Errorf("start Discord gateway: %w", err)
 	}
-
-	appLogger.Info("Discord gateway connected")
 
 	// Wait for shutdown signal
 	<-ctx.Done()
