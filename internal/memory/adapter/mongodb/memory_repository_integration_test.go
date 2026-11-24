@@ -275,6 +275,7 @@ func TestMemoryRepositoryEnsureIndexes(t *testing.T) {
 		"idx_memories_member_relevance",
 		"idx_memories_idempotency",
 		"idx_memories_candidate_item",
+		"idx_memories_content_dedup",
 	}
 
 	for _, name := range expected {
@@ -418,5 +419,291 @@ func TestMemoryRepositoryRewordedRetryProducesNoDuplicatesAndNormalizesContent(t
 	}
 	if candCount != 2 {
 		t.Errorf("candidate memory count = %d, want 2", candCount)
+	}
+}
+
+func TestMemoryRepositoryContentDedupAcrossDistinctCandidates(t *testing.T) {
+	repository := setupMemoryRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := repository.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes failed: %v", err)
+	}
+
+	t1 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 11, 21, 15, 30, 0, 0, time.UTC)
+	t3 := time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
+
+	first := newTestMemory(core.MemoryScopeMember, "user-dedup", "Likes Go for backend services")
+	first.CandidateID = "cand-001"
+	first.CandidateIndex = 0
+	first.SourceMessageID = "msg-001"
+	first.Importance = 3
+	first.CreatedAt = t1
+	first.UpdatedAt = t1
+
+	firstID, err := repository.Save(ctx, first)
+	if err != nil {
+		t.Fatalf("first Save failed: %v", err)
+	}
+
+	// Second distinct candidate extracts the same normalized fact with higher importance and newer timestamp.
+	second := newTestMemory(core.MemoryScopeMember, "user-dedup", "  likes   go for backend services ")
+	second.CandidateID = "cand-002"
+	second.CandidateIndex = 0
+	second.SourceMessageID = "msg-002"
+	second.Importance = 5
+	second.CreatedAt = t2
+	second.UpdatedAt = t2
+
+	secondID, err := repository.Save(ctx, second)
+	if err != nil {
+		t.Fatalf("second Save failed: %v", err)
+	}
+
+	if secondID != firstID {
+		t.Fatalf("two candidates with same fact produced duplicate memories: first=%q second=%q", firstID, secondID)
+	}
+
+	// Third distinct candidate has LOWER importance (2) and newer timestamp: importance must stay 5 (max).
+	third := newTestMemory(core.MemoryScopeMember, "user-dedup", "LIKES GO FOR BACKEND SERVICES")
+	third.CandidateID = "cand-003"
+	third.CandidateIndex = 0
+	third.SourceMessageID = "msg-003"
+	third.Importance = 2
+	third.CreatedAt = t3
+	third.UpdatedAt = t3
+
+	thirdID, err := repository.Save(ctx, third)
+	if err != nil {
+		t.Fatalf("third Save failed: %v", err)
+	}
+
+	if thirdID != firstID {
+		t.Fatalf("third duplicate candidate created new memory: first=%q third=%q", firstID, thirdID)
+	}
+
+	reloaded, err := repository.FindByID(ctx, "guild-123", firstID)
+	if err != nil {
+		t.Fatalf("FindByID failed: %v", err)
+	}
+
+	if reloaded.Importance != 5 {
+		t.Errorf("Importance = %d, want 5 (max)", reloaded.Importance)
+	}
+	if !reloaded.UpdatedAt.Equal(t3) {
+		t.Errorf("UpdatedAt = %v, want %v (max)", reloaded.UpdatedAt, t3)
+	}
+
+	count, err := repository.collection.CountDocuments(ctx, bson.M{"guild_id": "guild-123", "user_id": "user-dedup"})
+	if err != nil {
+		t.Fatalf("CountDocuments failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("memory count = %d, want 1", count)
+	}
+
+	// Community scope dedup across two candidates.
+	commA := newTestMemory(core.MemoryScopeCommunity, "", "Friday night gaming session")
+	commA.Type = core.MemoryTypeEvent
+	commA.CandidateID = "cand-comm-1"
+	commA.CandidateIndex = 0
+	commA.Importance = 2
+	commA.CreatedAt = t1
+	commA.UpdatedAt = t1
+
+	commAID, err := repository.Save(ctx, commA)
+	if err != nil {
+		t.Fatalf("commA Save failed: %v", err)
+	}
+
+	commB := newTestMemory(core.MemoryScopeCommunity, "", "  friday   night gaming session ")
+	commB.Type = core.MemoryTypeEvent
+	commB.CandidateID = "cand-comm-2"
+	commB.CandidateIndex = 0
+	commB.Importance = 4
+	commB.CreatedAt = t2
+	commB.UpdatedAt = t2
+
+	commBID, err := repository.Save(ctx, commB)
+	if err != nil {
+		t.Fatalf("commB Save failed: %v", err)
+	}
+	if commBID != commAID {
+		t.Fatalf("community duplicates were not merged: %q vs %q", commAID, commBID)
+	}
+
+	reloadedComm, err := repository.FindByID(ctx, "guild-123", commAID)
+	if err != nil {
+		t.Fatalf("FindByID community failed: %v", err)
+	}
+	if reloadedComm.Importance != 4 || !reloadedComm.UpdatedAt.Equal(t2) {
+		t.Errorf("community merged importance=%d updated_at=%v, want 4 and %v",
+			reloadedComm.Importance, reloadedComm.UpdatedAt, t2)
+	}
+
+	// Same content for a DIFFERENT user must NOT collide.
+	otherUser := newTestMemory(core.MemoryScopeMember, "user-other", "Likes Go for backend services")
+	otherUser.CandidateID = "cand-004"
+	otherUser.CandidateIndex = 0
+	otherID, err := repository.Save(ctx, otherUser)
+	if err != nil {
+		t.Fatalf("otherUser Save failed: %v", err)
+	}
+	if otherID == firstID {
+		t.Fatal("different user with same content should create a separate memory")
+	}
+
+	// Same content with DIFFERENT type must NOT collide.
+	diffType := newTestMemory(core.MemoryScopeMember, "user-dedup", "Likes Go for backend services")
+	diffType.Type = core.MemoryTypePreference
+	diffType.CandidateID = "cand-005"
+	diffType.CandidateIndex = 0
+	diffTypeID, err := repository.Save(ctx, diffType)
+	if err != nil {
+		t.Fatalf("diffType Save failed: %v", err)
+	}
+	if diffTypeID == firstID {
+		t.Fatal("different memory type should create a separate memory")
+	}
+}
+
+func TestMemoryRepositoryDeduplicateMemoriesCleanupHelper(t *testing.T) {
+	repository := setupMemoryRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	t1 := time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	used1 := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	used2 := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+
+	// Simulate pre-migration legacy duplicates without content_dedup_key.
+	legacyDocs := []any{
+		memoryDocument{
+			ID:              primitive.NewObjectID(),
+			GuildID:         "guild-legacy",
+			UserID:          "user-1",
+			Scope:           string(core.MemoryScopeMember),
+			Type:            string(core.MemoryTypePreference),
+			Content:         "Likes espresso",
+			Importance:      3,
+			Confidence:      0.8,
+			Tags:            []string{"coffee"},
+			SourceMessageID: "msg-1",
+			UsageCount:      2,
+			LastUsedAt:      &used1,
+			CreatedAt:       t1,
+			UpdatedAt:       t1,
+		},
+		memoryDocument{
+			ID:              primitive.NewObjectID(),
+			GuildID:         "guild-legacy",
+			UserID:          "user-1",
+			Scope:           string(core.MemoryScopeMember),
+			Type:            string(core.MemoryTypePreference),
+			Content:         "  likes   espresso ",
+			Importance:      5,
+			Confidence:      0.95,
+			Tags:            []string{"espresso"},
+			SourceMessageID: "msg-2",
+			UsageCount:      4,
+			LastUsedAt:      &used2,
+			CreatedAt:       t2,
+			UpdatedAt:       t2,
+		},
+		memoryDocument{
+			ID:              primitive.NewObjectID(),
+			GuildID:         "guild-legacy",
+			UserID:          "user-1",
+			Scope:           string(core.MemoryScopeMember),
+			Type:            string(core.MemoryTypePersonalFact),
+			Content:         "Works as a Go engineer",
+			Importance:      4,
+			Confidence:      0.9,
+			Tags:            []string{"go"},
+			SourceMessageID: "msg-3",
+			UsageCount:      1,
+			CreatedAt:       t1,
+			UpdatedAt:       t1,
+		},
+	}
+
+	if _, err := repository.collection.InsertMany(ctx, legacyDocs); err != nil {
+		t.Fatalf("InsertMany legacy docs failed: %v", err)
+	}
+
+	// EnsureIndexes must be migration-safe even when legacy duplicates exist without content_dedup_key.
+	if err := repository.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes should be migration-safe on pre-existing duplicates: %v", err)
+	}
+
+	// Dry-run reports changes without modifying documents.
+	dryReport, err := repository.DeduplicateMemories(ctx, "guild-legacy", true)
+	if err != nil {
+		t.Fatalf("DeduplicateMemories dry-run failed: %v", err)
+	}
+	if dryReport.Scanned != 3 || dryReport.GroupsMerged != 1 || dryReport.DuplicatesDeleted != 1 || dryReport.Backfilled != 1 {
+		t.Fatalf("unexpected dry-run report: %+v", dryReport)
+	}
+
+	countAfterDryRun, err := repository.collection.CountDocuments(ctx, bson.M{"guild_id": "guild-legacy"})
+	if err != nil {
+		t.Fatalf("CountDocuments failed: %v", err)
+	}
+	if countAfterDryRun != 3 {
+		t.Fatalf("dry-run modified documents: count=%d, want 3", countAfterDryRun)
+	}
+
+	// Apply pass merges duplicates and backfills content_dedup_key.
+	applyReport, err := repository.DeduplicateMemories(ctx, "guild-legacy", false)
+	if err != nil {
+		t.Fatalf("DeduplicateMemories apply failed: %v", err)
+	}
+	if applyReport.Scanned != 3 || applyReport.GroupsMerged != 1 || applyReport.DuplicatesDeleted != 1 || applyReport.Backfilled != 1 {
+		t.Fatalf("unexpected apply report: %+v", applyReport)
+	}
+
+	countAfterApply, err := repository.collection.CountDocuments(ctx, bson.M{"guild_id": "guild-legacy"})
+	if err != nil {
+		t.Fatalf("CountDocuments failed: %v", err)
+	}
+	if countAfterApply != 2 {
+		t.Fatalf("expected 2 documents after dedup, got %d", countAfterApply)
+	}
+
+	// Verify merged fields on surviving preference memory.
+	memories, err := repository.FindRelevant(ctx, "guild-legacy", "user-1", 10)
+	if err != nil {
+		t.Fatalf("FindRelevant failed: %v", err)
+	}
+	var merged *core.Memory
+	for i := range memories {
+		if memories[i].Type == core.MemoryTypePreference {
+			merged = &memories[i]
+			break
+		}
+	}
+	if merged == nil {
+		t.Fatal("surviving preference memory not found")
+	}
+	if merged.Importance != 5 || merged.UsageCount != 6 || !merged.CreatedAt.Equal(t1) || !merged.UpdatedAt.Equal(t2) {
+		t.Errorf("merged memory fields unexpected: importance=%d usage=%d created=%v updated=%v",
+			merged.Importance, merged.UsageCount, merged.CreatedAt, merged.UpdatedAt)
+	}
+	if merged.LastUsedAt == nil || !merged.LastUsedAt.Equal(used2) {
+		t.Errorf("merged LastUsedAt = %v, want %v", merged.LastUsedAt, used2)
+	}
+
+	// Second apply pass must be completely idempotent.
+	secondReport, err := repository.DeduplicateMemories(ctx, "guild-legacy", false)
+	if err != nil {
+		t.Fatalf("second DeduplicateMemories failed: %v", err)
+	}
+	if secondReport.GroupsMerged != 0 || secondReport.DuplicatesDeleted != 0 || secondReport.Backfilled != 0 {
+		t.Errorf("expected idempotent second run with zero changes, got %+v", secondReport)
 	}
 }

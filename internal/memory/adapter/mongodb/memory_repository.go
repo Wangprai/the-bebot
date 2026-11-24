@@ -55,36 +55,119 @@ func (r *MemoryRepository) Save(
 	document := toMemoryDocument(validated)
 	document.ID = primitive.NewObjectID()
 	document.IdempotencyKey = newMemoryIdempotencyKey(validated)
+	document.ContentDedupKey = newMemoryContentDedupKey(validated)
 
-	filter := bson.M{
-		"idempotency_key": document.IdempotencyKey,
-	}
+	// 1. Preserve candidate-level idempotency so retries of the same
+	// (guild_id, candidate_id, candidate_index) never create a second memory,
+	// even if the LLM rewords the extracted text.
 	if document.CandidateID != "" && document.CandidateIndex != nil {
-		filter = bson.M{
+		candidateFilter := bson.M{
 			"guild_id":        document.GuildID,
 			"candidate_id":    document.CandidateID,
 			"candidate_index": *document.CandidateIndex,
 		}
+
+		var existing memoryDocument
+		err := r.collection.FindOne(ctx, candidateFilter).Decode(&existing)
+		if err == nil {
+			return existing.ID.Hex(), nil
+		}
+		if !errors.Is(err, mongo.ErrNoDocuments) {
+			return "", fmt.Errorf("check existing candidate memory: %w", err)
+		}
+	}
+
+	// 2. Content-based deduplication upsert per guild + scope + type + user (member scope)
+	// + normalized content. On a duplicate, advance importance and updated_at to max.
+	dedupFilter := bson.M{
+		"guild_id":          document.GuildID,
+		"content_dedup_key": document.ContentDedupKey,
+	}
+
+	setOnInsert := bson.M{
+		"_id":               document.ID,
+		"guild_id":          document.GuildID,
+		"scope":             document.Scope,
+		"type":              document.Type,
+		"content":           document.Content,
+		"confidence":        document.Confidence,
+		"tags":              document.Tags,
+		"source_message_id": document.SourceMessageID,
+		"usage_count":       document.UsageCount,
+		"idempotency_key":   document.IdempotencyKey,
+		"content_dedup_key": document.ContentDedupKey,
+		"last_used_at":      document.LastUsedAt,
+		"created_at":        document.CreatedAt,
+	}
+	if document.UserID != "" {
+		setOnInsert["user_id"] = document.UserID
+	}
+	if document.CandidateID != "" {
+		setOnInsert["candidate_id"] = document.CandidateID
+	}
+	if document.CandidateIndex != nil {
+		setOnInsert["candidate_index"] = *document.CandidateIndex
+	}
+
+	maxUpdate := bson.M{
+		"importance": document.Importance,
+		"updated_at": document.UpdatedAt,
 	}
 
 	update := bson.M{
-		"$setOnInsert": document,
+		"$setOnInsert": setOnInsert,
+		"$max":         maxUpdate,
 	}
 
 	_, err = r.collection.UpdateOne(
 		ctx,
-		filter,
+		dedupFilter,
 		update,
 		options.Update().SetUpsert(true),
 	)
+	if err != nil {
+		if !mongo.IsDuplicateKeyError(err) {
+			return "", fmt.Errorf("upsert memory: %w", err)
+		}
 
-	if err != nil && !mongo.IsDuplicateKeyError(err) {
-		return "", fmt.Errorf("upsert memory: %w", err)
+		// Handle concurrent race on candidate_item index.
+		if document.CandidateID != "" && document.CandidateIndex != nil {
+			var existing memoryDocument
+			if findErr := r.collection.FindOne(ctx, bson.M{
+				"guild_id":        document.GuildID,
+				"candidate_id":    document.CandidateID,
+				"candidate_index": *document.CandidateIndex,
+			}).Decode(&existing); findErr == nil {
+				return existing.ID.Hex(), nil
+			}
+		}
+
+		// Handle concurrent race on content_dedup_key by applying the $max update.
+		res, retryErr := r.collection.UpdateOne(
+			ctx,
+			dedupFilter,
+			bson.M{"$max": maxUpdate},
+		)
+		if retryErr != nil {
+			return "", fmt.Errorf("update duplicate memory: %w", retryErr)
+		}
+
+		// Handle legacy pre-migration documents matched only by idempotency_key.
+		if res.MatchedCount == 0 {
+			legacyFilter := bson.M{"idempotency_key": document.IdempotencyKey}
+			var legacy memoryDocument
+			if legacyErr := r.collection.FindOne(ctx, legacyFilter).Decode(&legacy); legacyErr == nil {
+				_, _ = r.collection.UpdateOne(ctx, legacyFilter, bson.M{
+					"$set": bson.M{"content_dedup_key": document.ContentDedupKey},
+					"$max": maxUpdate,
+				})
+				return legacy.ID.Hex(), nil
+			}
+		}
 	}
 
 	var saved memoryDocument
-
-	if err := r.collection.FindOne(ctx, filter).Decode(&saved); err != nil {
+	if err := r.collection.FindOne(ctx, dedupFilter).Decode(&saved); err != nil {
 		return "", fmt.Errorf("find saved memory: %w", err)
 	}
 

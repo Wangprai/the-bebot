@@ -66,6 +66,20 @@ func (r *MemoryRepository) EnsureIndexes(ctx context.Context) error {
 					},
 				}),
 		},
+		{
+			Keys: bson.D{
+				{Key: "guild_id", Value: 1},
+				{Key: "content_dedup_key", Value: 1},
+			},
+			Options: options.Index().
+				SetName("idx_memories_content_dedup").
+				SetUnique(true).
+				SetPartialFilterExpression(bson.M{
+					"content_dedup_key": bson.M{
+						"$type": "string",
+					},
+				}),
+		},
 	}
 
 	_, err := r.collection.Indexes().CreateMany(ctx, indexes)

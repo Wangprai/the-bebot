@@ -27,6 +27,7 @@ type memoryDocument struct {
 	CandidateIndex  *int               `bson:"candidate_index,omitempty"`
 	UsageCount      int                `bson:"usage_count"`
 	IdempotencyKey  string             `bson:"idempotency_key,omitempty"`
+	ContentDedupKey string             `bson:"content_dedup_key,omitempty"`
 	LastUsedAt      *time.Time         `bson:"last_used_at"`
 	CreatedAt       time.Time          `bson:"created_at"`
 	UpdatedAt       time.Time          `bson:"updated_at"`
@@ -91,7 +92,47 @@ func (d memoryDocument) toDomain() (core.Memory, error) {
 }
 
 func normalizeMemoryContent(content string) string {
-	return strings.ToLower(strings.Join(strings.Fields(content), " "))
+	normalized := strings.ReplaceAll(content, "\u2019", "'")
+	normalized = strings.ReplaceAll(normalized, "\u2018", "'")
+	return strings.ToLower(strings.Join(strings.Fields(normalized), " "))
+}
+
+func newMemoryContentDedupKey(memory core.Memory) string {
+	userID := ""
+	if memory.Scope == core.MemoryScopeMember {
+		userID = strings.TrimSpace(memory.UserID)
+	}
+
+	identity := strings.Join([]string{
+		"content",
+		strings.TrimSpace(memory.GuildID),
+		string(memory.Scope),
+		string(memory.Type),
+		userID,
+		normalizeMemoryContent(memory.Content),
+	}, "\x00")
+
+	hash := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(hash[:])
+}
+
+func newMemoryDocumentContentDedupKey(doc memoryDocument) string {
+	userID := ""
+	if core.MemoryScope(doc.Scope) == core.MemoryScopeMember {
+		userID = strings.TrimSpace(doc.UserID)
+	}
+
+	identity := strings.Join([]string{
+		"content",
+		strings.TrimSpace(doc.GuildID),
+		strings.TrimSpace(doc.Scope),
+		strings.TrimSpace(doc.Type),
+		userID,
+		normalizeMemoryContent(doc.Content),
+	}, "\x00")
+
+	hash := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(hash[:])
 }
 
 func newMemoryIdempotencyKey(memory core.Memory) string {
