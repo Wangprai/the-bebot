@@ -23,6 +23,7 @@ type mockMemoryRepository struct {
 	guildID    string
 	userID     string
 	limit      int
+	lastQuery  core.RetrievalQuery
 	updatedIDs []string
 	usedAt     time.Time
 }
@@ -60,6 +61,7 @@ func (m *mockMemoryRepository) FindRelevantByQuery(
 	ctx context.Context,
 	query core.RetrievalQuery,
 ) ([]core.Memory, error) {
+	m.lastQuery = query
 	return m.FindRelevant(ctx, query.GuildID, query.UserID, query.Limit)
 }
 
@@ -323,5 +325,46 @@ func TestRetrieveMemoriesRejectsNilUseCase(t *testing.T) {
 
 	if !errors.Is(err, ErrMemoryRepositoryNil) {
 		t.Fatalf("expected ErrMemoryRepositoryNil, got %v", err)
+	}
+}
+
+func TestRetrieveMemoriesPropagatesQueryAndThresholds(t *testing.T) {
+	repository := &mockMemoryRepository{
+		memories: newTestMemories(),
+	}
+
+	useCase := NewRetrieveMemoriesUseCase(repository)
+	if err := useCase.SetMinConfidence(0.75); err != nil {
+		t.Fatalf("SetMinConfidence() error = %v", err)
+	}
+	if err := useCase.SetCommunityCorroboration(3, 0.95); err != nil {
+		t.Fatalf("SetCommunityCorroboration() error = %v", err)
+	}
+	if err := useCase.SetMinConfidence(1.5); err == nil {
+		t.Fatal("expected error for invalid min confidence")
+	}
+	if err := useCase.SetCommunityCorroboration(0, 0); err == nil {
+		t.Fatal("expected error for min corroborators < 1")
+	}
+
+	_, err := useCase.Execute(context.Background(), RetrieveMemoriesInput{
+		GuildID:   "guild-001",
+		UserID:    "user-001",
+		QueryText: "  espresso recommendations ",
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	if repository.lastQuery.QueryText != "espresso recommendations" {
+		t.Errorf("QueryText = %q, want espresso recommendations", repository.lastQuery.QueryText)
+	}
+	if repository.lastQuery.MinConfidence != 0.75 {
+		t.Errorf("MinConfidence = %v, want 0.75", repository.lastQuery.MinConfidence)
+	}
+	if repository.lastQuery.MinCommunityCorroborators != 3 || repository.lastQuery.CommunityHighConfidence != 0.95 {
+		t.Errorf("corroboration query = (%d, %v), want (3, 0.95)",
+			repository.lastQuery.MinCommunityCorroborators, repository.lastQuery.CommunityHighConfidence)
 	}
 }

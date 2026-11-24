@@ -26,6 +26,16 @@ func (a *MemoryRetrieverAdapter) RetrieveMemories(
 	userID string,
 	limit int,
 ) ([]conversationcore.MemoryContext, error) {
+	return a.RetrieveMemoriesForQuery(ctx, guildID, userID, "", limit)
+}
+
+func (a *MemoryRetrieverAdapter) RetrieveMemoriesForQuery(
+	ctx context.Context,
+	guildID string,
+	userID string,
+	query string,
+	limit int,
+) ([]conversationcore.MemoryContext, error) {
 	if a == nil || a.useCase == nil {
 		return nil, fmt.Errorf("memory retriever use case is nil")
 	}
@@ -33,9 +43,10 @@ func (a *MemoryRetrieverAdapter) RetrieveMemories(
 	memories, err := a.useCase.Execute(
 		ctx,
 		memoryapp.RetrieveMemoriesInput{
-			GuildID: guildID,
-			UserID:  userID,
-			Limit:   limit,
+			GuildID:   guildID,
+			UserID:    userID,
+			QueryText: query,
+			Limit:     limit,
 		},
 	)
 	if err != nil {
@@ -56,4 +67,7 @@ func (a *MemoryRetrieverAdapter) RetrieveMemories(
 	return result, nil
 }
 
-var _ conversationcore.MemoryRetriever = (*MemoryRetrieverAdapter)(nil)
+var (
+	_ conversationcore.MemoryRetriever           = (*MemoryRetrieverAdapter)(nil)
+	_ conversationcore.ContextualMemoryRetriever = (*MemoryRetrieverAdapter)(nil)
+)

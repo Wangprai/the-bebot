@@ -27,6 +27,11 @@ func unsetRelevantEnv(t *testing.T) {
 		"MEMORY_ENABLED",
 		"MEMORY_MAX_RETRIEVED_MEMORIES",
 		"MEMORY_WORKER_COUNT",
+		"MEMORY_MIN_CONFIDENCE",
+		"MEMORY_COMMUNITY_MIN_CORROBORATORS",
+		"MEMORY_COMMUNITY_HIGH_CONFIDENCE",
+		"MEMORY_UNUSED_TTL",
+		"MEMORY_UNUSED_TTL_MAX_IMPORTANCE",
 		"MOOD_USER_COOLDOWN",
 		"PERSONALITY_NAME",
 		"PERSONALITY_EXTRA_TRAITS",
@@ -84,6 +89,26 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 		t.Errorf("WorkerCount = %d, want 2", cfg.Memory.WorkerCount)
 	}
 
+	if cfg.Memory.MinConfidence != 0.5 {
+		t.Errorf("MinConfidence = %v, want 0.5", cfg.Memory.MinConfidence)
+	}
+
+	if cfg.Memory.CommunityMinCorroborators != 2 {
+		t.Errorf("CommunityMinCorroborators = %d, want 2", cfg.Memory.CommunityMinCorroborators)
+	}
+
+	if cfg.Memory.CommunityHighConfidence != 0 {
+		t.Errorf("CommunityHighConfidence = %v, want 0", cfg.Memory.CommunityHighConfidence)
+	}
+
+	if cfg.Memory.UnusedTTL != 0 {
+		t.Errorf("UnusedTTL = %v, want 0s (off-safe default)", cfg.Memory.UnusedTTL)
+	}
+
+	if cfg.Memory.UnusedTTLMaxImportance != 2 {
+		t.Errorf("UnusedTTLMaxImportance = %d, want 2", cfg.Memory.UnusedTTLMaxImportance)
+	}
+
 	if cfg.Mood.UserCooldown != 2*time.Minute {
 		t.Errorf("Mood.UserCooldown = %v, want 2m", cfg.Mood.UserCooldown)
 	}
@@ -113,6 +138,11 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	t.Setenv("MEMORY_ENABLED", "false")
 	t.Setenv("MEMORY_MAX_RETRIEVED_MEMORIES", "8")
 	t.Setenv("MEMORY_WORKER_COUNT", "4")
+	t.Setenv("MEMORY_MIN_CONFIDENCE", "0.75")
+	t.Setenv("MEMORY_COMMUNITY_MIN_CORROBORATORS", "3")
+	t.Setenv("MEMORY_COMMUNITY_HIGH_CONFIDENCE", "0.95")
+	t.Setenv("MEMORY_UNUSED_TTL", "720h")
+	t.Setenv("MEMORY_UNUSED_TTL_MAX_IMPORTANCE", "3")
 	t.Setenv("MOOD_USER_COOLDOWN", "5m")
 	t.Setenv("PERSONALITY_NAME", "Custom Bebot")
 	t.Setenv("PERSONALITY_EXTRA_TRAITS", "curious, sharp , ")
@@ -162,6 +192,14 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 
 	if cfg.Memory.WorkerCount != 4 {
 		t.Errorf("WorkerCount = %d, want 4", cfg.Memory.WorkerCount)
+	}
+
+	if cfg.Memory.MinConfidence != 0.75 ||
+		cfg.Memory.CommunityMinCorroborators != 3 ||
+		cfg.Memory.CommunityHighConfidence != 0.95 ||
+		cfg.Memory.UnusedTTL != 720*time.Hour ||
+		cfg.Memory.UnusedTTLMaxImportance != 3 {
+		t.Errorf("unexpected memory quality config: %+v", cfg.Memory)
 	}
 
 	if cfg.Mood.UserCooldown != 5*time.Minute {
@@ -219,6 +257,12 @@ func TestLoadFromEnvRejectsInvalidValues(t *testing.T) {
 		{name: "non-int worker count", key: "MEMORY_WORKER_COUNT", val: "abc"},
 		{name: "zero worker count", key: "MEMORY_WORKER_COUNT", val: "0"},
 		{name: "negative worker count", key: "MEMORY_WORKER_COUNT", val: "-3"},
+		{name: "invalid min confidence", key: "MEMORY_MIN_CONFIDENCE", val: "not-float"},
+		{name: "min confidence above 1", key: "MEMORY_MIN_CONFIDENCE", val: "1.5"},
+		{name: "min community corroborators zero", key: "MEMORY_COMMUNITY_MIN_CORROBORATORS", val: "0"},
+		{name: "community high confidence negative", key: "MEMORY_COMMUNITY_HIGH_CONFIDENCE", val: "-0.1"},
+		{name: "negative unused TTL", key: "MEMORY_UNUSED_TTL", val: "-1h"},
+		{name: "unused TTL max importance out of range", key: "MEMORY_UNUSED_TTL_MAX_IMPORTANCE", val: "6"},
 		{name: "invalid mood user cooldown", key: "MOOD_USER_COOLDOWN", val: "bad"},
 		{name: "negative mood user cooldown", key: "MOOD_USER_COOLDOWN", val: "-10s"},
 	}

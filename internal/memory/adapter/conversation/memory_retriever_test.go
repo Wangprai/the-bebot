@@ -16,6 +16,7 @@ type mockMemoryRepository struct {
 
 	guildID      string
 	userID       string
+	queryText    string
 	limit        int
 	updateCalled int
 }
@@ -51,6 +52,7 @@ func (m *mockMemoryRepository) FindRelevantByQuery(
 	ctx context.Context,
 	query memorycore.RetrievalQuery,
 ) ([]memorycore.Memory, error) {
+	m.queryText = query.QueryText
 	return m.FindRelevant(ctx, query.GuildID, query.UserID, query.Limit)
 }
 
@@ -173,5 +175,17 @@ func TestMemoryRetrieverAdapterRejectsNil(t *testing.T) {
 	adapter := NewMemoryRetrieverAdapter(nil)
 	if _, err := adapter.RetrieveMemories(context.Background(), "guild-001", "user-001", 5); err == nil {
 		t.Fatal("expected error for nil use case")
+	}
+}
+
+func TestMemoryRetrieverAdapterForwardsQueryText(t *testing.T) {
+	repo := &mockMemoryRepository{}
+	adapter := NewMemoryRetrieverAdapter(memoryapp.NewRetrieveMemoriesUseCase(repo))
+
+	if _, err := adapter.RetrieveMemoriesForQuery(context.Background(), "guild-001", "user-001", "favorite coffee", 5); err != nil {
+		t.Fatalf("RetrieveMemoriesForQuery() error = %v", err)
+	}
+	if repo.queryText != "favorite coffee" {
+		t.Errorf("queryText = %q, want favorite coffee", repo.queryText)
 	}
 }

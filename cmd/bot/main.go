@@ -159,11 +159,26 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("initialize memory repository: %w", err)
 		}
+		if err := memoryRepository.SetUnusedTTL(
+			cfg.Memory.UnusedTTL,
+			cfg.Memory.UnusedTTLMaxImportance,
+		); err != nil {
+			return fmt.Errorf("configure memory unused TTL: %w", err)
+		}
 
 		// Initialize Retrieve Memories Use Case
 		retrieveMemories := memoryapp.NewRetrieveMemoriesUseCase(
 			memoryRepository,
 		)
+		if err := retrieveMemories.SetMinConfidence(cfg.Memory.MinConfidence); err != nil {
+			return fmt.Errorf("configure memory min confidence: %w", err)
+		}
+		if err := retrieveMemories.SetCommunityCorroboration(
+			cfg.Memory.CommunityMinCorroborators,
+			cfg.Memory.CommunityHighConfidence,
+		); err != nil {
+			return fmt.Errorf("configure community memory corroboration: %w", err)
+		}
 		if err := retrieveMemories.SetLogger(appLogger); err != nil {
 			return fmt.Errorf("configure memory retrieval logger: %w", err)
 		}

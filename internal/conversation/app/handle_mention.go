@@ -447,12 +447,24 @@ func (uc *HandleMentionUseCase) HandleMention(
 			limit = defaultMaxRetrievedMemories
 		}
 
-		memories, err := uc.memoryRetriever.RetrieveMemories(
-			ctx,
-			event.GuildID,
-			event.UserID,
-			limit,
-		)
+		var memories []core.MemoryContext
+		var err error
+		if contextual, ok := uc.memoryRetriever.(core.ContextualMemoryRetriever); ok {
+			memories, err = contextual.RetrieveMemoriesForQuery(
+				ctx,
+				event.GuildID,
+				event.UserID,
+				event.Content,
+				limit,
+			)
+		} else {
+			memories, err = uc.memoryRetriever.RetrieveMemories(
+				ctx,
+				event.GuildID,
+				event.UserID,
+				limit,
+			)
+		}
 		if err != nil {
 			uc.logWarn(
 				"Failed to retrieve memories; continuing without memory context",

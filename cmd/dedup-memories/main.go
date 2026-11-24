@@ -17,13 +17,17 @@ import (
 
 func main() {
 	var (
-		guildID string
-		apply   bool
-		timeout time.Duration
+		guildID     string
+		apply       bool
+		consolidate bool
+		similarity  float64
+		timeout     time.Duration
 	)
 
-	flag.StringVar(&guildID, "guild", "", "optional guild ID to scope deduplication (empty = all guilds)")
+	flag.StringVar(&guildID, "guild", "", "optional guild ID to scope cleanup (empty = all guilds)")
 	flag.BoolVar(&apply, "apply", false, "apply changes to MongoDB (default is dry-run)")
+	flag.BoolVar(&consolidate, "consolidate", false, "also consolidate near-duplicate memories after exact deduplication")
+	flag.Float64Var(&similarity, "similarity", 0.70, "near-duplicate similarity threshold in (0, 1]")
 	flag.DurationVar(&timeout, "timeout", 2*time.Minute, "operation timeout")
 	flag.Parse()
 
@@ -71,4 +75,19 @@ func main() {
 		report.DuplicatesDeleted,
 		report.Backfilled,
 	)
+
+	if consolidate {
+		consReport, err := repo.ConsolidateNearDuplicates(ctx, guildID, similarity, !apply)
+		if err != nil {
+			log.Fatalf("consolidate near-duplicate memories: %v", err)
+		}
+		fmt.Printf(
+			"consolidation complete (dry_run=%v threshold=%.2f): scanned=%d groups_merged=%d merged_count=%d\n",
+			consReport.DryRun,
+			consReport.Threshold,
+			consReport.Scanned,
+			consReport.GroupsMerged,
+			consReport.MergedCount,
+		)
+	}
 }

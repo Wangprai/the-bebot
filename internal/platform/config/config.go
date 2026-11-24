@@ -61,9 +61,14 @@ type ConversationConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled              bool
-	MaxRetrievedMemories int
-	WorkerCount          int
+	Enabled                   bool
+	MaxRetrievedMemories      int
+	WorkerCount               int
+	MinConfidence             float64
+	CommunityMinCorroborators int
+	CommunityHighConfidence   float64
+	UnusedTTL                 time.Duration
+	UnusedTTLMaxImportance    int
 }
 
 func Load() (*Config, error) {
@@ -106,9 +111,14 @@ func LoadFromEnv() (*Config, error) {
 		},
 
 		Memory: MemoryConfig{
-			Enabled:              true,
-			MaxRetrievedMemories: 5,
-			WorkerCount:          2,
+			Enabled:                   true,
+			MaxRetrievedMemories:      5,
+			WorkerCount:               2,
+			MinConfidence:             0.5,
+			CommunityMinCorroborators: 2,
+			CommunityHighConfidence:   0,
+			UnusedTTL:                 0,
+			UnusedTTLMaxImportance:    2,
 		},
 
 		Mood: MoodConfig{
@@ -180,6 +190,36 @@ func LoadFromEnv() (*Config, error) {
 		return nil, err
 	}
 
+	if cfg.Memory.MinConfidence, err = getFloat(
+		"MEMORY_MIN_CONFIDENCE", cfg.Memory.MinConfidence,
+	); err != nil {
+		return nil, err
+	}
+
+	if cfg.Memory.CommunityMinCorroborators, err = getInt(
+		"MEMORY_COMMUNITY_MIN_CORROBORATORS", cfg.Memory.CommunityMinCorroborators,
+	); err != nil {
+		return nil, err
+	}
+
+	if cfg.Memory.CommunityHighConfidence, err = getFloat(
+		"MEMORY_COMMUNITY_HIGH_CONFIDENCE", cfg.Memory.CommunityHighConfidence,
+	); err != nil {
+		return nil, err
+	}
+
+	if cfg.Memory.UnusedTTL, err = getDuration(
+		"MEMORY_UNUSED_TTL", cfg.Memory.UnusedTTL,
+	); err != nil {
+		return nil, err
+	}
+
+	if cfg.Memory.UnusedTTLMaxImportance, err = getInt(
+		"MEMORY_UNUSED_TTL_MAX_IMPORTANCE", cfg.Memory.UnusedTTLMaxImportance,
+	); err != nil {
+		return nil, err
+	}
+
 	if cfg.Mood.UserCooldown, err = getDuration(
 		"MOOD_USER_COOLDOWN", cfg.Mood.UserCooldown,
 	); err != nil {
@@ -234,6 +274,26 @@ func (c *Config) Validate() error {
 		return errors.New("MEMORY_WORKER_COUNT must be greater than zero")
 	}
 
+	if c.Memory.MinConfidence < 0 || c.Memory.MinConfidence > 1 {
+		return errors.New("MEMORY_MIN_CONFIDENCE must be between 0 and 1")
+	}
+
+	if c.Memory.CommunityMinCorroborators < 1 {
+		return errors.New("MEMORY_COMMUNITY_MIN_CORROBORATORS must be at least 1")
+	}
+
+	if c.Memory.CommunityHighConfidence < 0 || c.Memory.CommunityHighConfidence > 1 {
+		return errors.New("MEMORY_COMMUNITY_HIGH_CONFIDENCE must be between 0 and 1")
+	}
+
+	if c.Memory.UnusedTTL < 0 {
+		return errors.New("MEMORY_UNUSED_TTL must be zero or greater")
+	}
+
+	if c.Memory.UnusedTTLMaxImportance < 1 || c.Memory.UnusedTTLMaxImportance > 5 {
+		return errors.New("MEMORY_UNUSED_TTL_MAX_IMPORTANCE must be between 1 and 5")
+	}
+
 	if c.Mood.UserCooldown < 0 {
 		return errors.New("MOOD_USER_COOLDOWN must be zero or greater")
 	}
@@ -283,6 +343,17 @@ func getBool(key string, fallback bool) (bool, error) {
 	result, err := strconv.ParseBool(value)
 	if err != nil {
 		return false, errors.New(key + " must be a boolean")
+	}
+
+	return result, nil
+}
+
+func getFloat(key string, fallback float64) (float64, error) {
+	value := getEnv(key, strconv.FormatFloat(fallback, 'f', -1, 64))
+
+	result, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, errors.New(key + " must be a floating-point number")
 	}
 
 	return result, nil

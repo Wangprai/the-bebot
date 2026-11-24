@@ -18,25 +18,60 @@ var (
 )
 
 type RetrieveMemoriesInput struct {
-	GuildID string
-	UserID  string
-	Limit   int
+	GuildID   string
+	UserID    string
+	QueryText string
+	Limit     int
 }
 
 type RetrieveMemoriesUseCase struct {
-	repository core.MemoryRepository
-	clock      func() time.Time
-	logger     *slog.Logger
+	repository                core.MemoryRepository
+	clock                     func() time.Time
+	logger                    *slog.Logger
+	minConfidence             float64
+	minCommunityCorroborators int
+	communityHighConfidence   float64
 }
 
 func NewRetrieveMemoriesUseCase(
 	repository core.MemoryRepository,
 ) *RetrieveMemoriesUseCase {
 	return &RetrieveMemoriesUseCase{
-		repository: repository,
-		clock:      time.Now,
-		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repository:                repository,
+		clock:                     time.Now,
+		logger:                    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		minConfidence:             core.DefaultMinConfidence,
+		minCommunityCorroborators: core.DefaultMinCommunityCorroborators,
 	}
+}
+
+func (uc *RetrieveMemoriesUseCase) SetMinConfidence(minConfidence float64) error {
+	if uc == nil {
+		return ErrMemoryRepositoryNil
+	}
+	if minConfidence < 0 || minConfidence > 1 {
+		return errors.New("min confidence must be between 0 and 1")
+	}
+	uc.minConfidence = minConfidence
+	return nil
+}
+
+func (uc *RetrieveMemoriesUseCase) SetCommunityCorroboration(
+	minCorroborators int,
+	highConfidence float64,
+) error {
+	if uc == nil {
+		return ErrMemoryRepositoryNil
+	}
+	if minCorroborators < 1 {
+		return errors.New("min community corroborators must be at least 1")
+	}
+	if highConfidence < 0 || highConfidence > 1 {
+		return errors.New("community high confidence must be between 0 and 1")
+	}
+	uc.minCommunityCorroborators = minCorroborators
+	uc.communityHighConfidence = highConfidence
+	return nil
 }
 
 func (uc *RetrieveMemoriesUseCase) SetLogger(logger *slog.Logger) error {
@@ -73,11 +108,18 @@ func (uc *RetrieveMemoriesUseCase) Execute(
 		return nil, ErrInvalidRetrievalInput
 	}
 
-	memories, err := uc.repository.FindRelevant(
+	memories, err := uc.repository.FindRelevantByQuery(
 		ctx,
-		input.GuildID,
-		input.UserID,
-		input.Limit,
+		core.RetrievalQuery{
+			GuildID:                   input.GuildID,
+			UserID:                    input.UserID,
+			QueryText:                 strings.TrimSpace(input.QueryText),
+			Limit:                     input.Limit,
+			MinConfidence:             uc.minConfidence,
+			MinCommunityCorroborators: uc.minCommunityCorroborators,
+			CommunityHighConfidence:   uc.communityHighConfidence,
+			Now:                       uc.clock().UTC(),
+		},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("find relevant memories: %w", err)

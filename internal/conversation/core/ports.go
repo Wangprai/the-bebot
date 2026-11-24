@@ -78,6 +78,18 @@ type MemoryRetriever interface {
 	) ([]MemoryContext, error)
 }
 
+// ContextualMemoryRetriever optionally extends MemoryRetriever with the current
+// message text so memories can be ranked by topic relevance.
+type ContextualMemoryRetriever interface {
+	RetrieveMemoriesForQuery(
+		ctx context.Context,
+		guildID string,
+		userID string,
+		query string,
+		limit int,
+	) ([]MemoryContext, error)
+}
+
 // PersonalityProvider supplies The Bebot's underlying behavioral personality.
 type PersonalityProvider interface {
 	GetPersonality(
