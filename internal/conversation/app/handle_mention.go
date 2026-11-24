@@ -16,12 +16,13 @@ const defaultMaxRetrievedMemories = 5
 var ErrEmptyResponse = errors.New("response generator returned empty response")
 
 type HandleMentionUseCase struct {
-	contextProvider     core.ContextProvider
-	conversationService core.ConversationService
-	responseGenerator   core.ResponseGenerator
-	messageSender       core.MessageSender
-	candidateCreator    core.CandidateCreator
-	memoryRetriever     core.MemoryRetriever
+	contextProvider        core.ContextProvider
+	conversationService    core.ConversationService
+	responseGenerator      core.ResponseGenerator
+	messageSender          core.MessageSender
+	candidateCreator       core.CandidateCreator
+	memoryRetriever        core.MemoryRetriever
+	conversationRepository core.ConversationRepository
 
 	maxMessages          int
 	maxRetrievedMemories int
@@ -78,6 +79,21 @@ func (uc *HandleMentionUseCase) SetTimeout(timeout time.Duration) error {
 	return nil
 }
 
+func (uc *HandleMentionUseCase) SetConversationRepository(
+	repository core.ConversationRepository,
+) error {
+	if uc == nil {
+		return fmt.Errorf("handle mention use case is nil")
+	}
+
+	if repository == nil {
+		return fmt.Errorf("conversation repository is required")
+	}
+
+	uc.conversationRepository = repository
+	return nil
+}
+
 func (uc *HandleMentionUseCase) HandleMention(
 	ctx context.Context,
 	event core.MentionEvent,
@@ -105,19 +121,30 @@ func (uc *HandleMentionUseCase) HandleMention(
 		return fmt.Errorf("context TTL must be greater than zero")
 	}
 
-	// Fetch recent messages from the same channel.
-	messages, err := uc.contextProvider.FetchRecentMessages(
+	// Fetch recent messages from Discord as the primary source.
+	messages, fetchErr := uc.contextProvider.FetchRecentMessages(
 		ctx,
 		event.GuildID,
 		event.ChannelID,
 		uc.maxMessages,
 	)
-	if err != nil {
-		return fmt.Errorf("fetch recent messages: %w", err)
+
+	if fetchErr != nil {
+		// Fall back to the latest non-expired persisted snapshot if available.
+		fallback, ok := uc.loadLatestPersistedMessages(ctx, event)
+		if !ok {
+			return fmt.Errorf("fetch recent messages: %w", fetchErr)
+		}
+		messages = fallback
+	} else if len(messages) < uc.maxMessages {
+		// Supplement live messages with non-duplicate messages from the latest snapshot.
+		if persisted, ok := uc.loadLatestPersistedMessages(ctx, event); ok {
+			messages = mergeUniqueMessages(messages, persisted)
+		}
 	}
 
 	// Ensure the trigger message is included.
-	messages, err = ensureTriggerMessage(
+	messages, err := ensureTriggerMessage(
 		event,
 		messages,
 		uc.maxMessages,
@@ -181,6 +208,16 @@ func (uc *HandleMentionUseCase) HandleMention(
 		return fmt.Errorf("send response: %w", err)
 	}
 
+	// Persist latest conversation context snapshot (24h TTL).
+	if uc.conversationRepository != nil {
+		if err := uc.conversationRepository.Save(
+			ctx,
+			conversationContext,
+		); err != nil {
+			return fmt.Errorf("save conversation context: %w", err)
+		}
+	}
+
 	// Create memory candidate for background processing.
 	if err := uc.candidateCreator.CreateCandidate(
 		ctx,
@@ -190,6 +227,61 @@ func (uc *HandleMentionUseCase) HandleMention(
 	}
 
 	return nil
+}
+
+func (uc *HandleMentionUseCase) loadLatestPersistedMessages(
+	ctx context.Context,
+	event core.MentionEvent,
+) ([]core.Message, bool) {
+	if uc.conversationRepository == nil {
+		return nil, false
+	}
+
+	latest, err := uc.conversationRepository.FindLatest(
+		ctx,
+		event.GuildID,
+		event.ChannelID,
+	)
+	if err != nil || latest == nil {
+		return nil, false
+	}
+
+	if err := uc.conversationService.ValidateContext(*latest, time.Now().UTC()); err != nil {
+		return nil, false
+	}
+
+	if len(latest.Messages) == 0 {
+		return nil, false
+	}
+
+	return latest.Messages, true
+}
+
+func mergeUniqueMessages(
+	live []core.Message,
+	persisted []core.Message,
+) []core.Message {
+	seen := make(map[string]struct{}, len(live)+len(persisted))
+	merged := make([]core.Message, 0, len(live)+len(persisted))
+
+	// Live Discord messages take precedence over persisted copies.
+	for _, message := range live {
+		if _, exists := seen[message.ID]; exists {
+			continue
+		}
+		seen[message.ID] = struct{}{}
+		merged = append(merged, message)
+	}
+
+	for _, message := range persisted {
+		if _, exists := seen[message.ID]; exists {
+			continue
+		}
+		seen[message.ID] = struct{}{}
+		merged = append(merged, message)
+	}
+
+	return merged
 }
 
 func ensureTriggerMessage(

@@ -501,3 +501,280 @@ func TestHandleMentionEnforcesTimeout(t *testing.T) {
 		t.Error("MessageSender should not be called after timeout")
 	}
 }
+
+type mockConversationRepository struct {
+	saved      []core.ConversationContext
+	latest     *core.ConversationContext
+	saveErr    error
+	findErr    error
+	findCalled bool
+}
+
+func (m *mockConversationRepository) Save(
+	ctx context.Context,
+	conversationContext core.ConversationContext,
+) error {
+	if m.saveErr != nil {
+		return m.saveErr
+	}
+	m.saved = append(m.saved, conversationContext)
+	return nil
+}
+
+func (m *mockConversationRepository) FindLatest(
+	ctx context.Context,
+	guildID string,
+	channelID string,
+) (*core.ConversationContext, error) {
+	m.findCalled = true
+	return m.latest, m.findErr
+}
+
+func (m *mockConversationRepository) DeleteExpired(
+	ctx context.Context,
+	before time.Time,
+) error {
+	return nil
+}
+
+func TestHandleMentionPersistsLatestSnapshotAndMergesWithoutDuplicates(t *testing.T) {
+	now := time.Now().UTC()
+
+	event := core.MentionEvent{
+		GuildID:     "guild-001",
+		ChannelID:   "channel-001",
+		MessageID:   "message-003",
+		UserID:      "user-001",
+		Content:     "@TheBebot hi again",
+		MentionedAt: now,
+	}
+
+	// Live Discord returns message-002 (which also exists in persisted snapshot).
+	provider := &mockContextProvider{
+		messages: []core.Message{
+			{
+				ID:        "message-002",
+				GuildID:   event.GuildID,
+				ChannelID: event.ChannelID,
+				UserID:    "user-002",
+				Content:   "Live version of message 2",
+				CreatedAt: now.Add(-time.Minute),
+			},
+		},
+	}
+
+	repo := &mockConversationRepository{
+		latest: &core.ConversationContext{
+			GuildID:          event.GuildID,
+			ChannelID:        event.ChannelID,
+			TriggerMessageID: "message-002",
+			Messages: []core.Message{
+				{
+					ID:        "message-001",
+					GuildID:   event.GuildID,
+					ChannelID: event.ChannelID,
+					UserID:    "user-001",
+					Content:   "Older persisted message",
+					CreatedAt: now.Add(-2 * time.Minute),
+				},
+				{
+					ID:        "message-002",
+					GuildID:   event.GuildID,
+					ChannelID: event.ChannelID,
+					UserID:    "user-002",
+					Content:   "Stale persisted copy of message 2",
+					CreatedAt: now.Add(-time.Minute),
+				},
+			},
+			CreatedAt: now.Add(-time.Minute),
+			ExpiresAt: now.Add(23 * time.Hour),
+		},
+	}
+
+	generator := &mockResponseGenerator{response: "Hey there!"}
+	sender := &mockMessageSender{}
+	candidateCreator := &mockCandidateCreator{}
+
+	uc := NewHandleMentionUseCase(
+		provider,
+		core.NewConversationService(),
+		generator,
+		sender,
+		candidateCreator,
+		nil,
+		15,
+		24*time.Hour,
+	)
+
+	if err := uc.SetConversationRepository(repo); err != nil {
+		t.Fatalf("SetConversationRepository() error = %v", err)
+	}
+
+	if err := uc.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("HandleMention() error = %v", err)
+	}
+
+	if !repo.findCalled {
+		t.Fatal("expected FindLatest to be called")
+	}
+
+	if len(generator.receivedContext.Messages) != 3 {
+		t.Fatalf("expected 3 deduplicated messages, got %d", len(generator.receivedContext.Messages))
+	}
+
+	if generator.receivedContext.Messages[0].ID != "message-001" ||
+		generator.receivedContext.Messages[1].ID != "message-002" ||
+		generator.receivedContext.Messages[2].ID != "message-003" {
+		t.Errorf("unexpected chronological order: %+v", generator.receivedContext.Messages)
+	}
+
+	if generator.receivedContext.Messages[1].Content != "Live version of message 2" {
+		t.Errorf("live message must take precedence, got %q", generator.receivedContext.Messages[1].Content)
+	}
+
+	if len(repo.saved) != 1 {
+		t.Fatalf("expected 1 saved snapshot, got %d", len(repo.saved))
+	}
+
+	if repo.saved[0].TriggerMessageID != event.MessageID {
+		t.Errorf("saved TriggerMessageID = %q, want %q", repo.saved[0].TriggerMessageID, event.MessageID)
+	}
+}
+
+func TestHandleMentionFallsBackToPersistedSnapshotOnFetchError(t *testing.T) {
+	now := time.Now().UTC()
+
+	event := core.MentionEvent{
+		GuildID:     "guild-001",
+		ChannelID:   "channel-001",
+		MessageID:   "message-002",
+		UserID:      "user-001",
+		Content:     "@TheBebot fallback test",
+		MentionedAt: now,
+	}
+
+	provider := &mockContextProvider{
+		err: errors.New("discord REST temporarily unavailable"),
+	}
+
+	repo := &mockConversationRepository{
+		latest: &core.ConversationContext{
+			GuildID:          event.GuildID,
+			ChannelID:        event.ChannelID,
+			TriggerMessageID: "message-001",
+			Messages: []core.Message{
+				{
+					ID:        "message-001",
+					GuildID:   event.GuildID,
+					ChannelID: event.ChannelID,
+					UserID:    "user-001",
+					Content:   "Earlier message",
+					CreatedAt: now.Add(-time.Minute),
+				},
+			},
+			CreatedAt: now.Add(-time.Minute),
+			ExpiresAt: now.Add(23 * time.Hour),
+		},
+	}
+
+	generator := &mockResponseGenerator{response: "Still here!"}
+	sender := &mockMessageSender{}
+
+	uc := NewHandleMentionUseCase(
+		provider,
+		core.NewConversationService(),
+		generator,
+		sender,
+		&mockCandidateCreator{},
+		nil,
+		15,
+		24*time.Hour,
+	)
+
+	if err := uc.SetConversationRepository(repo); err != nil {
+		t.Fatalf("SetConversationRepository() error = %v", err)
+	}
+
+	if err := uc.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("expected fallback to succeed, got error: %v", err)
+	}
+
+	if len(generator.receivedContext.Messages) != 2 {
+		t.Fatalf("expected 2 messages (persisted + trigger), got %d", len(generator.receivedContext.Messages))
+	}
+
+	if !sender.called {
+		t.Error("expected MessageSender to be called")
+	}
+
+	if len(repo.saved) != 1 {
+		t.Fatalf("expected updated snapshot to be saved, got %d", len(repo.saved))
+	}
+}
+
+func TestHandleMentionIgnoresExpiredFallbackAndReturnsFetchError(t *testing.T) {
+	now := time.Now().UTC()
+
+	event := core.MentionEvent{
+		GuildID:     "guild-001",
+		ChannelID:   "channel-001",
+		MessageID:   "message-002",
+		UserID:      "user-001",
+		Content:     "@TheBebot expired fallback",
+		MentionedAt: now,
+	}
+
+	fetchErr := errors.New("discord REST unavailable")
+	provider := &mockContextProvider{err: fetchErr}
+
+	repo := &mockConversationRepository{
+		latest: &core.ConversationContext{
+			GuildID:          event.GuildID,
+			ChannelID:        event.ChannelID,
+			TriggerMessageID: "message-001",
+			Messages: []core.Message{
+				{
+					ID:        "message-001",
+					GuildID:   event.GuildID,
+					ChannelID: event.ChannelID,
+					UserID:    "user-001",
+					Content:   "Stale message",
+					CreatedAt: now.Add(-25 * time.Hour),
+				},
+			},
+			CreatedAt: now.Add(-25 * time.Hour),
+			ExpiresAt: now.Add(-time.Hour),
+		},
+	}
+
+	uc := NewHandleMentionUseCase(
+		provider,
+		core.NewConversationService(),
+		&mockResponseGenerator{response: "nope"},
+		&mockMessageSender{},
+		&mockCandidateCreator{},
+		nil,
+		15,
+		24*time.Hour,
+	)
+	_ = uc.SetConversationRepository(repo)
+
+	err := uc.HandleMention(context.Background(), event)
+	if !errors.Is(err, fetchErr) {
+		t.Fatalf("expected fetch error when fallback is expired, got %v", err)
+	}
+}
+
+func TestHandleMentionSaveConversationContextError(t *testing.T) {
+	useCase, _, _, _, _, event := newTestUseCase()
+
+	expectedErr := errors.New("mongodb write error")
+	_ = useCase.SetConversationRepository(&mockConversationRepository{
+		saveErr: expectedErr,
+	})
+
+	err := useCase.HandleMention(context.Background(), event)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected save error %v, got %v", expectedErr, err)
+	}
+}

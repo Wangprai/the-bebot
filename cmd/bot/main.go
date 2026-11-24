@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"the-bebot/internal/ai/adapter/llm"
+	convmongodb "the-bebot/internal/conversation/adapter/mongodb"
 	"the-bebot/internal/conversation/app"
 	"the-bebot/internal/conversation/core"
 	"the-bebot/internal/discord/adapter/gateway"
@@ -273,6 +274,23 @@ func run() error {
 		appLogger.Info("Memory candidate creation disabled")
 	}
 
+	// Initialize Conversation Repository
+	conversationRepository, err := convmongodb.NewConversationRepository(
+		db.Database,
+	)
+	if err != nil {
+		return fmt.Errorf("initialize conversation repository: %w", err)
+	}
+
+	convIndexCtx, convIndexCancel := context.WithTimeout(ctx, 10*time.Second)
+	err = conversationRepository.EnsureIndexes(convIndexCtx)
+	convIndexCancel()
+	if err != nil {
+		return fmt.Errorf("ensure conversation indexes: %w", err)
+	}
+
+	appLogger.Info("Conversation indexes ensured")
+
 	// Initialize Conversation Service
 	conversationService := core.NewConversationService()
 
@@ -287,6 +305,12 @@ func run() error {
 		cfg.Conversation.MaxMessages,
 		conversationContextTTL,
 	)
+
+	if err := mentionHandler.SetConversationRepository(
+		conversationRepository,
+	); err != nil {
+		return fmt.Errorf("configure conversation repository: %w", err)
+	}
 
 	if err := mentionHandler.SetMaxRetrievedMemories(
 		cfg.Memory.MaxRetrievedMemories,
