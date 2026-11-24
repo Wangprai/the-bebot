@@ -72,48 +72,49 @@ func (r *CandidateRules) ShouldCreateCandidate(
 		return false, err
 	}
 
-	targetUserID := strings.TrimSpace(validated.TargetUserID)
-	if targetUserID == "" {
-		for _, message := range validated.Messages {
-			if message.MessageID == validated.TriggerMessageID {
-				targetUserID = strings.TrimSpace(message.UserID)
-				break
-			}
+	var triggerMessage *core.ConversationMessage
+	for i := range validated.Messages {
+		if validated.Messages[i].MessageID == validated.TriggerMessageID {
+			triggerMessage = &validated.Messages[i]
+			break
 		}
 	}
 
-	for _, message := range validated.Messages {
-		if message.IsBot {
-			continue
+	if triggerMessage == nil || triggerMessage.IsBot {
+		return false, nil
+	}
+
+	targetUserID := strings.TrimSpace(validated.TargetUserID)
+	if targetUserID != "" && triggerMessage.UserID != targetUserID {
+		return false, nil
+	}
+
+	cleaned := stripCandidateMentions(triggerMessage.Content)
+	if utf8.RuneCountInString(cleaned) < r.minContentLength {
+		return false, nil
+	}
+
+	normalized := normalizeSignalContent(cleaned)
+
+	for _, signal := range r.thaiSignals {
+		if strings.Contains(normalized, signal) {
+			return true, nil
 		}
+	}
 
-		// Only evaluate messages authored by the candidate's target user.
-		if targetUserID != "" && message.UserID != targetUserID {
-			continue
-		}
-
-		cleaned := stripCandidateMentions(message.Content)
-
-		if utf8.RuneCountInString(cleaned) < r.minContentLength {
-			continue
-		}
-
-		normalized := strings.ToLower(cleaned)
-
-		for _, signal := range r.thaiSignals {
-			if strings.Contains(normalized, signal) {
-				return true, nil
-			}
-		}
-
-		for _, pattern := range r.englishPatterns {
-			if pattern.MatchString(normalized) {
-				return true, nil
-			}
+	for _, pattern := range r.englishPatterns {
+		if pattern.MatchString(normalized) {
+			return true, nil
 		}
 	}
 
 	return false, nil
+}
+
+func normalizeSignalContent(content string) string {
+	normalized := strings.ReplaceAll(content, "\u2019", "'")
+	normalized = strings.ReplaceAll(normalized, "\u2018", "'")
+	return strings.ToLower(normalized)
 }
 
 func stripCandidateMentions(content string) string {
