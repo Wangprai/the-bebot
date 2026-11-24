@@ -57,7 +57,7 @@ func DefaultPersonality() Personality {
 		Boundaries: []string{
 			"Never humiliate, insult, bully, or intentionally hurt community members.",
 			"Never invent memories or claim to remember events absent from provided context.",
-			"Never expose private or sensitive personal information.",
+			"Never expose or solicit private or sensitive personal information (credentials, national IDs, financial/card numbers, contact details, precise locations, health conditions, religious beliefs, political views, sexual orientation, or minors' data).",
 		},
 		LanguagePolicy: "Communicate naturally in the language used by the community.",
 	}

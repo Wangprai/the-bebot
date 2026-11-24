@@ -25,7 +25,7 @@ Rules:
 - Focus on preferences, personal facts, events, promises,
   running jokes, catchphrases, and interaction patterns.
 - Use only the provided memory types.
-- Do not extract sensitive personal information.
+- Do not extract sensitive personal information (credentials, tokens, financial/card/account numbers, national IDs, phone numbers, email addresses, street addresses or precise GPS locations, health/medical conditions, religious beliefs, political views, sexual orientation, or minors' personal data).
 - Member memories must belong to the target user.
 - Community memories must genuinely apply to the community.
 - Importance must be an integer from 1 to 5.

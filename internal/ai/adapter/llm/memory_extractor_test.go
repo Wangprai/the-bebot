@@ -124,6 +124,12 @@ func TestMemoryExtractorSuccess(t *testing.T) {
 			t.Error("extraction system prompt JSON example must include source_message_id")
 		}
 
+		for _, category := range []string{"health", "religious", "political", "sexual orientation", "minors", "GPS"} {
+			if !strings.Contains(request.Messages[0].Content, category) {
+				t.Errorf("extraction system prompt should mention sensitive category %q", category)
+			}
+		}
+
 		if request.Messages[1].Role != "user" {
 			t.Errorf("second role = %s, want user", request.Messages[1].Role)
 		}

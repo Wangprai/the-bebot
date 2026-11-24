@@ -24,6 +24,29 @@ func TestDefaultPersonalityIsValid(t *testing.T) {
 		validated.LanguagePolicy == "" {
 		t.Fatalf("default personality is missing required sections: %+v", validated)
 	}
+
+	joinedBoundaries := ""
+	for _, b := range validated.Boundaries {
+		joinedBoundaries += " " + b
+	}
+	for _, expected := range []string{"health", "religious", "political", "sexual orientation", "minors", "precise locations"} {
+		if !containsSubstring(joinedBoundaries, expected) {
+			t.Errorf("default personality boundaries should mention %q", expected)
+		}
+	}
+}
+
+func containsSubstring(s, sub string) bool {
+	return len(sub) == 0 || (len(s) >= len(sub) && indexOf(s, sub) >= 0)
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestNewPersonalityRejectsInvalidFields(t *testing.T) {
