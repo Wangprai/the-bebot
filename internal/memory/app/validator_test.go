@@ -310,6 +310,82 @@ func TestMemoryValidatorRejectsSensitiveContent(t *testing.T) {
 			name:    "Thai soi house number address",
 			content: "อยู่ 123/45 ซอยลาดพร้าว 101",
 		},
+		{
+			name:    "Card number separated by spaces (Luhn valid)",
+			content: "My card is 4111 1111 1111 1111",
+		},
+		{
+			name:    "Card number separated by dashes (Luhn valid)",
+			content: "Card 4111-1111-1111-1111",
+		},
+		{
+			name:    "Card number separated by dots (Luhn valid)",
+			content: "Use 4111.1111.1111.1111 for payment",
+		},
+		{
+			name:    "Thai national ID formatted with dashes (regression)",
+			content: "ID is 1-2345-67890-12-3",
+		},
+		{
+			name:    "Thai national ID with valid checksum and dashes",
+			content: "Citizen ID 1-2345-67890-12-1",
+		},
+		{
+			name:    "Health condition English",
+			content: "Was diagnosed with diabetes last year",
+		},
+		{
+			name:    "Health condition Thai",
+			content: "เป็นโรคซึมเศร้าและต้องพบจิตแพทย์ทุกเดือน",
+		},
+		{
+			name:    "Religion English",
+			content: "Identifies as a devout Buddhist",
+		},
+		{
+			name:    "Religion Thai",
+			content: "นับถือศาสนาอิสลามมาตั้งแต่เด็ก",
+		},
+		{
+			name:    "Politics English",
+			content: "Voted for the Democratic Party in the last election",
+		},
+		{
+			name:    "Politics Thai",
+			content: "สนับสนุนพรรคการเมืองฝ่ายค้านมาตลอด",
+		},
+		{
+			name:    "Sexual orientation English",
+			content: "Came out as bisexual to friends last year",
+		},
+		{
+			name:    "Sexual orientation Thai",
+			content: "เล่าให้เพื่อนฟังว่าเป็นเกย์",
+		},
+		{
+			name:    "Precise GPS coordinates",
+			content: "My home is at 13.7563, 100.5018",
+		},
+		{
+			name:    "Google Maps precise location link",
+			content: "Pinned location at https://maps.google.com/?q=13.7563,100.5018",
+		},
+		{
+			name:    "Thai precise location and postal code",
+			content: "พิกัดบ้านอยู่ที่รหัสไปรษณีย์ 10110",
+		},
+		{
+			name:    "Minor age English",
+			content: "I am 14 years old and in middle school",
+		},
+		{
+			name:    "Minor age Thai",
+			content: "อายุ 15 ปี เรียนอยู่ ม.3",
+		},
+		{
+			name:    "Minor child school info English",
+			content: "My daughter's school is Riverside Elementary",
+		},
 	}
 
 	for _, tt := range tests {
@@ -333,6 +409,12 @@ func TestMemoryValidatorAllowsNonSensitiveContent(t *testing.T) {
 		"ชอบกินข้าวซอยไก่มาก",
 		"Talked with @Alice about coffee shops",
 		"Prefers running on the road in the morning",
+		"Lives in Bangkok and loves late-night street food",
+		"I am 25 years old and work as a backend developer",
+		"อายุ 28 ปี ชอบเล่นเกมหลังเลิกงาน",
+		"The latte costs 95.50 baht and the croissant is 85.00",
+		"ชอบไปเที่ยวเชียงใหม่ช่วงหน้าหนาว",
+		"Working on release 2.4.12 for the Discord bot",
 	}
 
 	for _, content := range allowed {
@@ -413,5 +495,29 @@ func TestMemoryValidatorRejectsNilReceiver(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error for nil validator")
+	}
+}
+
+func TestSensitiveChecksumsAndDigitWindows(t *testing.T) {
+	if !isValidLuhn([]int{4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}) {
+		t.Error("expected 4111111111111111 to pass Luhn check")
+	}
+	if isValidLuhn([]int{4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2}) {
+		t.Error("expected 4111111111111112 to fail Luhn check")
+	}
+
+	if !isValidThaiNationalID([]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 1}) {
+		t.Error("expected 1-2345-67890-12-1 to pass Thai national ID checksum")
+	}
+	if isValidThaiNationalID([]int{1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3}) {
+		t.Error("expected 1-2345-67890-12-3 to fail Thai national ID checksum")
+	}
+	if isValidThaiNationalID([]int{0, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 1}) {
+		t.Error("expected leading 0 to fail Thai national ID checksum")
+	}
+
+	runs := extractSeparatedDigitRuns("Card 4111 1111-1111.1111 and Go 1.27")
+	if len(runs) != 2 || len(runs[0]) != 16 || len(runs[1]) != 3 {
+		t.Fatalf("unexpected digit runs: %+v", runs)
 	}
 }
