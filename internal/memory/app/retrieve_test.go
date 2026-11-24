@@ -69,6 +69,19 @@ func (m *mockMemoryRepository) UpdateUsage(
 	return m.updateErr
 }
 
+func (m *mockMemoryRepository) UpdateUsageMany(
+	ctx context.Context,
+	guildID string,
+	memoryIDs []string,
+	usedAt time.Time,
+) error {
+	m.updateCalled++
+	m.updatedIDs = append(m.updatedIDs, memoryIDs...)
+	m.usedAt = usedAt
+
+	return m.updateErr
+}
+
 func (m *mockMemoryRepository) DeleteByID(
 	ctx context.Context,
 	guildID string,
@@ -149,8 +162,12 @@ func TestRetrieveMemories(t *testing.T) {
 		t.Errorf("unexpected limit: %d", repository.limit)
 	}
 
-	if repository.updateCalled != 2 {
-		t.Errorf("expected 2 usage updates, got %d", repository.updateCalled)
+	if repository.updateCalled != 1 {
+		t.Errorf("expected 1 bulk usage update call, got %d", repository.updateCalled)
+	}
+
+	if len(repository.updatedIDs) != 2 {
+		t.Errorf("expected 2 memory IDs in bulk update, got %v", repository.updatedIDs)
 	}
 
 	if !repository.usedAt.Equal(now) {

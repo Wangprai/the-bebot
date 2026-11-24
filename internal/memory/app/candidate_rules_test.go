@@ -106,12 +106,56 @@ func TestCandidateRulesShouldCreateCandidate(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "Another user has memory signal",
+			name: "Another user has memory signal should be ignored",
 			messages: []core.ConversationMessage{
 				{
 					MessageID: "message-001",
 					UserID:    "user-002",
 					Content:   "ฉันชอบเขียนโปรแกรมด้วยภาษา Go",
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "English word boundary prevents Miami matching i am",
+			messages: []core.ConversationMessage{
+				{
+					MessageID: "message-001",
+					UserID:    "user-001",
+					Content:   "Miami is a warm city to visit next year",
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "English word boundary prevents hi william matching i will",
+			messages: []core.ConversationMessage{
+				{
+					MessageID: "message-001",
+					UserID:    "user-001",
+					Content:   "Hi William, how is the project going?",
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Mention tokens are stripped before length and signal checks",
+			messages: []core.ConversationMessage{
+				{
+					MessageID: "message-001",
+					UserID:    "user-001",
+					Content:   "<@123456789012345678> ชอบ Go",
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Valid signal still matches after stripping mention token",
+			messages: []core.ConversationMessage{
+				{
+					MessageID: "message-001",
+					UserID:    "user-001",
+					Content:   "<@!123456789012345678> I'm building a Discord bot in Go",
 				},
 			},
 			expected: true,

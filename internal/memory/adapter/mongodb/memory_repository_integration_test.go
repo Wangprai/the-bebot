@@ -188,8 +188,9 @@ func TestMemoryRepositoryIntegration(t *testing.T) {
 		}
 	}
 
-	// UpdateUsage.
-	usedAt := time.Now().UTC().Truncate(time.Millisecond)
+	// UpdateUsage must NOT modify updated_at (only usage_count and last_used_at).
+	originalUpdatedAt := found.UpdatedAt
+	usedAt := time.Now().UTC().Add(time.Hour).Truncate(time.Millisecond)
 
 	if err := repository.UpdateUsage(ctx, "guild-123", memberID, usedAt); err != nil {
 		t.Fatalf("UpdateUsage failed: %v", err)
@@ -210,6 +211,10 @@ func TestMemoryRepositoryIntegration(t *testing.T) {
 
 	if !updated.LastUsedAt.Equal(usedAt) {
 		t.Errorf("expected LastUsedAt %v, got %v", usedAt, *updated.LastUsedAt)
+	}
+
+	if !updated.UpdatedAt.Equal(originalUpdatedAt) {
+		t.Errorf("UpdateUsage must not touch updated_at: got %v, want %v", updated.UpdatedAt, originalUpdatedAt)
 	}
 
 	// Wrong guild must not find the memory.
@@ -269,11 +274,149 @@ func TestMemoryRepositoryEnsureIndexes(t *testing.T) {
 		"idx_memories_community_relevance",
 		"idx_memories_member_relevance",
 		"idx_memories_idempotency",
+		"idx_memories_candidate_item",
 	}
 
 	for _, name := range expected {
 		if !found[name] {
 			t.Errorf("expected index %q was not created", name)
 		}
+	}
+}
+
+func TestMemoryRepositoryUpdateUsageManyPreservesUpdatedAtAndRanking(t *testing.T) {
+	repository := setupMemoryRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := repository.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes failed: %v", err)
+	}
+
+	olderTime := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	newerTime := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+
+	older := newTestMemory(core.MemoryScopeMember, "user-rank", "Older preference")
+	older.CreatedAt = olderTime
+	older.UpdatedAt = olderTime
+	olderID, err := repository.Save(ctx, older)
+	if err != nil {
+		t.Fatalf("Save older failed: %v", err)
+	}
+
+	newer := newTestMemory(core.MemoryScopeMember, "user-rank", "Newer preference")
+	newer.CreatedAt = newerTime
+	newer.UpdatedAt = newerTime
+	newerID, err := repository.Save(ctx, newer)
+	if err != nil {
+		t.Fatalf("Save newer failed: %v", err)
+	}
+
+	// Bulk update usage for both memories at a much later timestamp.
+	usedAt := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	if err := repository.UpdateUsageMany(ctx, "guild-123", []string{olderID, newerID}, usedAt); err != nil {
+		t.Fatalf("UpdateUsageMany failed: %v", err)
+	}
+
+	// Also update older one more time; it still must NOT overtake newer in FindRelevant.
+	laterUse := usedAt.Add(time.Hour)
+	if err := repository.UpdateUsageMany(ctx, "guild-123", []string{olderID}, laterUse); err != nil {
+		t.Fatalf("second UpdateUsageMany failed: %v", err)
+	}
+
+	reloadedOlder, err := repository.FindByID(ctx, "guild-123", olderID)
+	if err != nil {
+		t.Fatalf("FindByID older failed: %v", err)
+	}
+	if reloadedOlder.UsageCount != 2 || !reloadedOlder.UpdatedAt.Equal(olderTime) {
+		t.Errorf("older usage=%d updated_at=%v, want usage=2 updated_at=%v",
+			reloadedOlder.UsageCount, reloadedOlder.UpdatedAt, olderTime)
+	}
+
+	relevant, err := repository.FindRelevant(ctx, "guild-123", "user-rank", 5)
+	if err != nil {
+		t.Fatalf("FindRelevant failed: %v", err)
+	}
+	if len(relevant) != 2 {
+		t.Fatalf("expected 2 relevant memories, got %d", len(relevant))
+	}
+	if relevant[0].ID != newerID {
+		t.Errorf("newer memory should rank first (updated_at unchanged by usage): got %q first, want %q", relevant[0].ID, newerID)
+	}
+}
+
+func TestMemoryRepositoryRewordedRetryProducesNoDuplicatesAndNormalizesContent(t *testing.T) {
+	repository := setupMemoryRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := repository.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes failed: %v", err)
+	}
+
+	// 1. Candidate-backed memories: reworded retry at same (candidate_id, index) produces NO duplicate.
+	firstAttempt := newTestMemory(core.MemoryScopeMember, "user-retry", "Likes Go for backend services")
+	firstAttempt.CandidateID = "cand-abc"
+	firstAttempt.CandidateIndex = 0
+
+	firstID, err := repository.Save(ctx, firstAttempt)
+	if err != nil {
+		t.Fatalf("first Save failed: %v", err)
+	}
+
+	rewordedRetry := newTestMemory(core.MemoryScopeMember, "user-retry", "Prefers Golang for backend engineering")
+	rewordedRetry.CandidateID = "cand-abc"
+	rewordedRetry.CandidateIndex = 0
+
+	retryID, err := repository.Save(ctx, rewordedRetry)
+	if err != nil {
+		t.Fatalf("reworded retry Save failed: %v", err)
+	}
+	if retryID != firstID {
+		t.Fatalf("reworded retry created duplicate: got ID %q, want %q", retryID, firstID)
+	}
+
+	// Different index for the same candidate IS saved as a second memory.
+	secondItem := newTestMemory(core.MemoryScopeMember, "user-retry", "Uses MongoDB")
+	secondItem.CandidateID = "cand-abc"
+	secondItem.CandidateIndex = 1
+	secondID, err := repository.Save(ctx, secondItem)
+	if err != nil {
+		t.Fatalf("second item Save failed: %v", err)
+	}
+	if secondID == firstID {
+		t.Fatal("distinct candidate index should create a distinct memory")
+	}
+
+	// 2. Non-candidate memories (no candidate_id): partial unique index allows multiple docs,
+	//    and content-based idempotency normalizes case & whitespace.
+	legacyA := newTestMemory(core.MemoryScopeMember, "user-norm", "Likes   Go\tProgramming")
+	idA, err := repository.Save(ctx, legacyA)
+	if err != nil {
+		t.Fatalf("Save legacyA failed: %v", err)
+	}
+
+	legacyB := newTestMemory(core.MemoryScopeMember, "user-norm", "likes go programming")
+	idB, err := repository.Save(ctx, legacyB)
+	if err != nil {
+		t.Fatalf("Save legacyB failed: %v", err)
+	}
+	if idB != idA {
+		t.Errorf("normalized content should deduplicate: idA=%q idB=%q", idA, idB)
+	}
+
+	legacyDifferent := newTestMemory(core.MemoryScopeMember, "user-norm", "likes rust programming")
+	if _, err := repository.Save(ctx, legacyDifferent); err != nil {
+		t.Fatalf("second legacy doc without candidate_id should coexist under partial index: %v", err)
+	}
+
+	candCount, err := repository.collection.CountDocuments(ctx, bson.M{"candidate_id": "cand-abc"})
+	if err != nil {
+		t.Fatalf("CountDocuments failed: %v", err)
+	}
+	if candCount != 2 {
+		t.Errorf("candidate memory count = %d, want 2", candCount)
 	}
 }

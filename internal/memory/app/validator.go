@@ -2,11 +2,20 @@ package app
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
 
 	"the-bebot/internal/memory/core"
+)
+
+var (
+	thaiPhonePattern            = regexp.MustCompile(`(?:\b0[689]\d[\s-]?\d{3}[\s-]?\d{4}\b|\b0[2-7]\d?[\s-]?\d{3}[\s-]?\d{3,4}\b)`)
+	intlThaiPhonePattern        = regexp.MustCompile(`\+66[\s-]?\d{1,2}[\s-]?\d{3}[\s-]?\d{3,4}\b`)
+	emailAddressPattern         = regexp.MustCompile(`(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b`)
+	englishStreetAddressPattern = regexp.MustCompile(`(?i)\b\d{1,5}(?:/\d{1,4})?\s+[a-z0-9][a-z0-9\s.\-]{1,40}\b(?:street|st|road|rd|avenue|ave|boulevard|blvd|lane|ln|drive|dr|soi|alley|way|court|ct|place|pl)\b\.?`)
+	thaiStreetAddressPattern    = regexp.MustCompile(`(?:บ้านเลขที่\s*\d+|\d+/\d+\s*(?:หมู่|ม\.|ซอย|ซ\.|ถนน|ถ\.)|(?:ซอย|ถนน)\s*\S+.*(?:แขวง|เขต|ตำบล|อำเภอ|จังหวัด)|(?:แขวง|ตำบล)\s*\S+\s*(?:เขต|อำเภอ)\s*\S+)`)
 )
 
 type MemoryValidator struct {
@@ -122,6 +131,14 @@ func containsSensitivePattern(content string) bool {
 		if strings.Contains(lower, pattern) {
 			return true
 		}
+	}
+
+	if thaiPhonePattern.MatchString(content) ||
+		intlThaiPhonePattern.MatchString(content) ||
+		emailAddressPattern.MatchString(content) ||
+		englishStreetAddressPattern.MatchString(content) ||
+		thaiStreetAddressPattern.MatchString(content) {
+		return true
 	}
 
 	// Detect long digit sequences that may represent

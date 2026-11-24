@@ -3,6 +3,7 @@ package mongodb
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ type memoryDocument struct {
 	Confidence      float64            `bson:"confidence"`
 	Tags            []string           `bson:"tags"`
 	SourceMessageID string             `bson:"source_message_id"`
+	CandidateID     string             `bson:"candidate_id,omitempty"`
+	CandidateIndex  *int               `bson:"candidate_index,omitempty"`
 	UsageCount      int                `bson:"usage_count"`
 	IdempotencyKey  string             `bson:"idempotency_key,omitempty"`
 	LastUsedAt      *time.Time         `bson:"last_used_at"`
@@ -40,10 +43,16 @@ func toMemoryDocument(memory core.Memory) memoryDocument {
 		Confidence:      memory.Confidence,
 		Tags:            memory.Tags,
 		SourceMessageID: memory.SourceMessageID,
+		CandidateID:     memory.CandidateID,
 		UsageCount:      memory.UsageCount,
 		LastUsedAt:      memory.LastUsedAt,
 		CreatedAt:       memory.CreatedAt,
 		UpdatedAt:       memory.UpdatedAt,
+	}
+
+	if memory.CandidateID != "" {
+		idx := memory.CandidateIndex
+		document.CandidateIndex = &idx
 	}
 
 	if memory.ID != "" {
@@ -56,6 +65,11 @@ func toMemoryDocument(memory core.Memory) memoryDocument {
 }
 
 func (d memoryDocument) toDomain() (core.Memory, error) {
+	candidateIndex := 0
+	if d.CandidateIndex != nil {
+		candidateIndex = *d.CandidateIndex
+	}
+
 	return core.NewMemory(core.Memory{
 		ID:              d.ID.Hex(),
 		GuildID:         d.GuildID,
@@ -67,6 +81,8 @@ func (d memoryDocument) toDomain() (core.Memory, error) {
 		Confidence:      d.Confidence,
 		Tags:            d.Tags,
 		SourceMessageID: d.SourceMessageID,
+		CandidateID:     d.CandidateID,
+		CandidateIndex:  candidateIndex,
 		UsageCount:      d.UsageCount,
 		LastUsedAt:      d.LastUsedAt,
 		CreatedAt:       d.CreatedAt,
@@ -74,14 +90,29 @@ func (d memoryDocument) toDomain() (core.Memory, error) {
 	})
 }
 
+func normalizeMemoryContent(content string) string {
+	return strings.ToLower(strings.Join(strings.Fields(content), " "))
+}
+
 func newMemoryIdempotencyKey(memory core.Memory) string {
+	if memory.CandidateID != "" {
+		identity := strings.Join([]string{
+			"candidate",
+			memory.GuildID,
+			memory.CandidateID,
+			strconv.Itoa(memory.CandidateIndex),
+		}, "\x00")
+		hash := sha256.Sum256([]byte(identity))
+		return hex.EncodeToString(hash[:])
+	}
+
 	identity := strings.Join([]string{
 		memory.GuildID,
 		memory.SourceMessageID,
 		string(memory.Scope),
 		string(memory.Type),
 		memory.UserID,
-		memory.Content,
+		normalizeMemoryContent(memory.Content),
 	}, "\x00")
 
 	hash := sha256.Sum256([]byte(identity))

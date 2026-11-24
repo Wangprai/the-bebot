@@ -55,6 +55,8 @@ type Memory struct {
 	Tags       []string
 
 	SourceMessageID string
+	CandidateID     string
+	CandidateIndex  int
 
 	UsageCount int
 	LastUsedAt *time.Time
@@ -69,6 +71,11 @@ func NewMemory(memory Memory) (Memory, error) {
 	memory.UserID = strings.TrimSpace(memory.UserID)
 	memory.Content = strings.TrimSpace(memory.Content)
 	memory.SourceMessageID = strings.TrimSpace(memory.SourceMessageID)
+	memory.CandidateID = strings.TrimSpace(memory.CandidateID)
+
+	if memory.CandidateID != "" && memory.CandidateIndex < 0 {
+		return Memory{}, ErrInvalidMemoryID
+	}
 
 	if memory.ID == "" {
 		return Memory{}, ErrInvalidMemoryID

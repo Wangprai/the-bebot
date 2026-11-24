@@ -28,6 +28,13 @@ type MemoryRepository interface {
 		usedAt time.Time,
 	) error
 
+	UpdateUsageMany(
+		ctx context.Context,
+		guildID string,
+		memoryIDs []string,
+		usedAt time.Time,
+	) error
+
 	DeleteByID(
 		ctx context.Context,
 		guildID string,

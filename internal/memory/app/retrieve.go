@@ -83,20 +83,24 @@ func (uc *RetrieveMemoriesUseCase) Execute(
 		return nil, fmt.Errorf("find relevant memories: %w", err)
 	}
 
-	usedAt := uc.clock()
+	if len(memories) > 0 {
+		usedAt := uc.clock()
+		memoryIDs := make([]string, 0, len(memories))
+		for _, memory := range memories {
+			memoryIDs = append(memoryIDs, memory.ID)
+		}
 
-	for _, memory := range memories {
-		if err := uc.repository.UpdateUsage(
+		if err := uc.repository.UpdateUsageMany(
 			ctx,
 			input.GuildID,
-			memory.ID,
+			memoryIDs,
 			usedAt,
 		); err != nil {
 			if uc.logger != nil {
 				uc.logger.Warn(
 					"Failed to update memory usage; returning retrieved memories",
 					"guild_id", input.GuildID,
-					"memory_id", memory.ID,
+					"memory_count", len(memoryIDs),
 					"error", err,
 				)
 			}

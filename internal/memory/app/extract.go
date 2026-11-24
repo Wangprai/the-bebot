@@ -14,6 +14,7 @@ var ErrInvalidExtractionRequest = errors.New("invalid extraction request")
 type ExtractionRequest struct {
 	Snapshot     core.ConversationSnapshot
 	TargetUserID string
+	CandidateID  string
 }
 
 type ExtractMemoriesUseCase struct {
@@ -60,6 +61,8 @@ func (uc *ExtractMemoriesUseCase) Execute(
 			err,
 		)
 	}
+
+	snapshot.TargetUserID = targetUserID
 
 	shouldExtract, err := uc.rules.ShouldCreateCandidate(snapshot)
 	if err != nil {
@@ -126,11 +129,20 @@ func (uc *ExtractMemoriesUseCase) Execute(
 			continue
 		}
 
+		if candidateID := strings.TrimSpace(request.CandidateID); candidateID != "" {
+			memory.CandidateID = candidateID
+			memory.CandidateIndex = i
+		}
+
 		memories = append(memories, memory)
 	}
 
 	if len(memories) == 0 && len(validationErrs) > 0 {
-		return nil, errors.Join(validationErrs...)
+		return nil, fmt.Errorf(
+			"%w: %w",
+			core.ErrAllExtractedMemoriesInvalid,
+			errors.Join(validationErrs...),
+		)
 	}
 
 	return memories, nil

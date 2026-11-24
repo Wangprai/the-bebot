@@ -57,6 +57,16 @@ func (m *mockMemoryRepository) UpdateUsage(
 	return nil
 }
 
+func (m *mockMemoryRepository) UpdateUsageMany(
+	ctx context.Context,
+	guildID string,
+	memoryIDs []string,
+	usedAt time.Time,
+) error {
+	m.updateCalled++
+	return nil
+}
+
 func (m *mockMemoryRepository) DeleteByID(
 	ctx context.Context,
 	guildID string,
@@ -127,7 +137,7 @@ func TestMemoryRetrieverAdapterRetrieveMemories(t *testing.T) {
 		t.Errorf("second memory mapped incorrectly: %+v", memories[1])
 	}
 
-	if repo.limit != 5 || repo.updateCalled != 2 {
+	if repo.limit != 5 || repo.updateCalled != 1 {
 		t.Errorf("unexpected repository call state: limit=%d updateCalled=%d", repo.limit, repo.updateCalled)
 	}
 }

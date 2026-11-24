@@ -93,6 +93,15 @@ func (m *mockProcessorMemoryRepository) UpdateUsage(
 	return nil
 }
 
+func (m *mockProcessorMemoryRepository) UpdateUsageMany(
+	ctx context.Context,
+	guildID string,
+	memoryIDs []string,
+	usedAt time.Time,
+) error {
+	return nil
+}
+
 func (m *mockProcessorMemoryRepository) DeleteByID(
 	ctx context.Context,
 	guildID, memoryID string,
@@ -309,8 +318,65 @@ func TestMemoryCandidateProcessorSuccess(t *testing.T) {
 		)
 	}
 
+	if memoryRepo.saved[0].CandidateID != "0123456789abcdef01234567" || memoryRepo.saved[0].CandidateIndex != 0 {
+		t.Errorf("expected CandidateID and CandidateIndex on saved memory, got id=%q idx=%d",
+			memoryRepo.saved[0].CandidateID, memoryRepo.saved[0].CandidateIndex)
+	}
+
 	if candidateRepo.updated[0].WorkerID != "" {
 		t.Fatal("expected worker ID to be cleared")
+	}
+}
+
+func TestMemoryCandidateProcessorRejectsDeterministicValidationFailureImmediately(t *testing.T) {
+	sensitiveItem := core.ExtractedMemory{
+		Scope:           core.MemoryScopeMember,
+		Type:            core.MemoryTypePersonalFact,
+		Content:         "My phone number is 081-234-5678",
+		Importance:      4,
+		Confidence:      0.95,
+		SourceMessageID: "message-123",
+	}
+
+	extractionUseCase := memoryapp.NewExtractMemoriesUseCase(
+		&mockCandidateRules{shouldCreate: true},
+		&mockMemoryExtractor{
+			memories: []core.ExtractedMemory{sensitiveItem},
+		},
+		memoryapp.NewMemoryValidator(),
+	)
+
+	memoryRepo := &mockProcessorMemoryRepository{}
+	candidateRepo := &mockProcessorCandidateRepository{}
+
+	processor, err := NewMemoryCandidateProcessor(
+		extractionUseCase,
+		memoryRepo,
+		candidateRepo,
+		core.NewCandidateService(),
+	)
+	if err != nil {
+		t.Fatalf("create processor: %v", err)
+	}
+
+	candidate := newProcessorTestCandidate(t)
+	candidate.Attempts = 1
+
+	// Deterministic validation rejection should succeed without error and mark candidate rejected immediately.
+	if err := processor.Process(context.Background(), candidate); err != nil {
+		t.Fatalf("expected nil error on immediate deterministic rejection, got %v", err)
+	}
+
+	if len(memoryRepo.saved) != 0 {
+		t.Fatalf("expected 0 saved memories, got %d", len(memoryRepo.saved))
+	}
+
+	if len(candidateRepo.updated) != 1 {
+		t.Fatalf("expected 1 candidate update, got %d", len(candidateRepo.updated))
+	}
+
+	if candidateRepo.updated[0].Status != core.CandidateStatusRejected {
+		t.Fatalf("candidate status = %s, want rejected (must not retry deterministic validation failure)", candidateRepo.updated[0].Status)
 	}
 }
 

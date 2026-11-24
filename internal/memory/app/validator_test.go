@@ -270,6 +270,46 @@ func TestMemoryValidatorRejectsSensitiveContent(t *testing.T) {
 			name:    "long digit sequence",
 			content: "My account number is 1234567890123",
 		},
+		{
+			name:    "Thai mobile phone with dashes",
+			content: "Call me at 081-234-5678 anytime",
+		},
+		{
+			name:    "Thai mobile phone compact",
+			content: "Phone is 0812345678",
+		},
+		{
+			name:    "Thai landline phone",
+			content: "Office number 02-123-4567",
+		},
+		{
+			name:    "International +66 phone",
+			content: "WhatsApp +66 81-234-5678",
+		},
+		{
+			name:    "International +66 compact phone",
+			content: "Reach me at +66812345678",
+		},
+		{
+			name:    "Email address",
+			content: "Email me at alice.dev+bot@example.co.th",
+		},
+		{
+			name:    "English street address",
+			content: "Lives at 123 Main Street downtown",
+		},
+		{
+			name:    "Thai/English road address",
+			content: "Address is 45/2 Sukhumvit Rd.",
+		},
+		{
+			name:    "Thai house number address",
+			content: "บ้านเลขที่ 99/12 ถนนสุขุมวิท",
+		},
+		{
+			name:    "Thai soi house number address",
+			content: "อยู่ 123/45 ซอยลาดพร้าว 101",
+		},
 	}
 
 	for _, tt := range tests {
@@ -282,6 +322,27 @@ func TestMemoryValidatorRejectsSensitiveContent(t *testing.T) {
 
 			if !errors.Is(err, core.ErrInvalidExtractedMemory) {
 				t.Errorf("error = %v, want ErrInvalidExtractedMemory", err)
+			}
+		})
+	}
+}
+
+func TestMemoryValidatorAllowsNonSensitiveContent(t *testing.T) {
+	allowed := []string{
+		"Likes Go 1.27 and joined the server in 2026",
+		"ชอบกินข้าวซอยไก่มาก",
+		"Talked with @Alice about coffee shops",
+		"Prefers running on the road in the morning",
+	}
+
+	for _, content := range allowed {
+		t.Run(content, func(t *testing.T) {
+			validator := newTestMemoryValidator()
+			input := validExtractedMemory()
+			input.Content = content
+
+			if _, err := validator.Validate(input, validExtractionSource()); err != nil {
+				t.Errorf("expected %q to be allowed, got error: %v", content, err)
 			}
 		})
 	}

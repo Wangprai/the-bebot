@@ -1,21 +1,40 @@
 package app
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"the-bebot/internal/memory/core"
 )
 
+var (
+	candidateMentionPattern = regexp.MustCompile(`<@!?[0-9A-Za-z_-]+>`)
+	englishSignalPatterns   = []*regexp.Regexp{
+		regexp.MustCompile(`\bi\s+like\b`),
+		regexp.MustCompile(`\bi\s+dislike\b`),
+		regexp.MustCompile(`\bi\s+hate\b`),
+		regexp.MustCompile(`\bi\s+am\b`),
+		regexp.MustCompile(`\bi'm\b`),
+		regexp.MustCompile(`\bi\s+work\b`),
+		regexp.MustCompile(`\bi\s+study\b`),
+		regexp.MustCompile(`\bi\s+will\b`),
+		regexp.MustCompile(`\bi\s+promise\b`),
+		regexp.MustCompile(`\bmy\s+favorite\b`),
+		regexp.MustCompile(`\bmy\s+hobby\b`),
+	}
+)
+
 type CandidateRules struct {
 	minContentLength int
-	signals          []string
+	thaiSignals      []string
+	englishPatterns  []*regexp.Regexp
 }
 
 func NewCandidateRules() *CandidateRules {
 	return &CandidateRules{
 		minContentLength: 12,
-		signals: []string{
+		thaiSignals: []string{
 			// Thai: Preferences
 			"ชอบ",
 			"ไม่ชอบ",
@@ -36,20 +55,8 @@ func NewCandidateRules() *CandidateRules {
 			"สัญญาว่า",
 			"ไว้จะ",
 			"อาทิตย์หน้าจะ",
-
-			// English
-			"i like",
-			"i dislike",
-			"i hate",
-			"i am",
-			"i'm",
-			"i work",
-			"i study",
-			"i will",
-			"i promise",
-			"my favorite",
-			"my hobby",
 		},
+		englishPatterns: englishSignalPatterns,
 	}
 }
 
@@ -65,25 +72,51 @@ func (r *CandidateRules) ShouldCreateCandidate(
 		return false, err
 	}
 
+	targetUserID := strings.TrimSpace(validated.TargetUserID)
+	if targetUserID == "" {
+		for _, message := range validated.Messages {
+			if message.MessageID == validated.TriggerMessageID {
+				targetUserID = strings.TrimSpace(message.UserID)
+				break
+			}
+		}
+	}
+
 	for _, message := range validated.Messages {
 		if message.IsBot {
 			continue
 		}
 
-		content := strings.TrimSpace(message.Content)
-
-		if utf8.RuneCountInString(content) < r.minContentLength {
+		// Only evaluate messages authored by the candidate's target user.
+		if targetUserID != "" && message.UserID != targetUserID {
 			continue
 		}
 
-		normalized := strings.ToLower(content)
+		cleaned := stripCandidateMentions(message.Content)
 
-		for _, signal := range r.signals {
+		if utf8.RuneCountInString(cleaned) < r.minContentLength {
+			continue
+		}
+
+		normalized := strings.ToLower(cleaned)
+
+		for _, signal := range r.thaiSignals {
 			if strings.Contains(normalized, signal) {
+				return true, nil
+			}
+		}
+
+		for _, pattern := range r.englishPatterns {
+			if pattern.MatchString(normalized) {
 				return true, nil
 			}
 		}
 	}
 
 	return false, nil
+}
+
+func stripCandidateMentions(content string) string {
+	stripped := candidateMentionPattern.ReplaceAllString(content, " ")
+	return strings.TrimSpace(strings.Join(strings.Fields(stripped), " "))
 }

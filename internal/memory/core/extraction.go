@@ -6,9 +6,10 @@ import (
 )
 
 var (
-	ErrInvalidExtractionInput  = errors.New("invalid extraction input")
-	ErrInvalidExtractionSource = errors.New("invalid extraction source")
-	ErrInvalidExtractedMemory  = errors.New("invalid extracted memory")
+	ErrInvalidExtractionInput      = errors.New("invalid extraction input")
+	ErrInvalidExtractionSource     = errors.New("invalid extraction source")
+	ErrInvalidExtractedMemory      = errors.New("invalid extracted memory")
+	ErrAllExtractedMemoriesInvalid = errors.New("all extracted memories failed validation")
 )
 
 type ExtractionInput struct {
@@ -22,6 +23,7 @@ type ConversationSnapshot struct {
 	GuildID          string
 	ChannelID        string
 	TriggerMessageID string
+	TargetUserID     string
 	Messages         []ConversationMessage
 }
 

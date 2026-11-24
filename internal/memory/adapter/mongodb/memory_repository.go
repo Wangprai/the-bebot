@@ -59,6 +59,13 @@ func (r *MemoryRepository) Save(
 	filter := bson.M{
 		"idempotency_key": document.IdempotencyKey,
 	}
+	if document.CandidateID != "" && document.CandidateIndex != nil {
+		filter = bson.M{
+			"guild_id":        document.GuildID,
+			"candidate_id":    document.CandidateID,
+			"candidate_index": *document.CandidateIndex,
+		}
+	}
 
 	update := bson.M{
 		"$setOnInsert": document,
@@ -223,7 +230,6 @@ func (r *MemoryRepository) UpdateUsage(
 		},
 		"$set": bson.M{
 			"last_used_at": usedAt,
-			"updated_at":   usedAt,
 		},
 	}
 
@@ -234,6 +240,56 @@ func (r *MemoryRepository) UpdateUsage(
 
 	if result.MatchedCount == 0 {
 		return ErrMemoryNotFound
+	}
+
+	return nil
+}
+
+func (r *MemoryRepository) UpdateUsageMany(
+	ctx context.Context,
+	guildID string,
+	memoryIDs []string,
+	usedAt time.Time,
+) error {
+	if r == nil || r.collection == nil {
+		return errors.New("memory repository is not initialized")
+	}
+
+	if ctx == nil {
+		return errors.New("context is required")
+	}
+
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+
+	objectIDs := make([]primitive.ObjectID, 0, len(memoryIDs))
+	for _, memoryID := range memoryIDs {
+		objectID, err := primitive.ObjectIDFromHex(memoryID)
+		if err != nil {
+			return ErrInvalidMemoryID
+		}
+		objectIDs = append(objectIDs, objectID)
+	}
+
+	filter := bson.M{
+		"guild_id": guildID,
+		"_id": bson.M{
+			"$in": objectIDs,
+		},
+	}
+
+	update := bson.M{
+		"$inc": bson.M{
+			"usage_count": 1,
+		},
+		"$set": bson.M{
+			"last_used_at": usedAt,
+		},
+	}
+
+	if _, err := r.collection.UpdateMany(ctx, filter, update); err != nil {
+		return fmt.Errorf("bulk update memory usage: %w", err)
 	}
 
 	return nil

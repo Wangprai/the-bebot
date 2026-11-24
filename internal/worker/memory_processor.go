@@ -111,9 +111,14 @@ func (p *MemoryCandidateProcessor) Process(
 		memoryapp.ExtractionRequest{
 			Snapshot:     snapshot,
 			TargetUserID: candidate.UserID,
+			CandidateID:  candidate.ID,
 		},
 	)
 	if err != nil {
+		if isDeterministicValidationError(err) {
+			return p.reject(ctx, candidate, workerID)
+		}
+
 		return p.fail(
 			ctx,
 			candidate,
@@ -126,9 +131,14 @@ func (p *MemoryCandidateProcessor) Process(
 		return p.reject(ctx, candidate, workerID)
 	}
 
-	for _, memory := range memories {
+	for i, memory := range memories {
 		if err := ctx.Err(); err != nil {
 			return p.fail(ctx, candidate, workerID, err)
+		}
+
+		if memory.CandidateID == "" {
+			memory.CandidateID = candidate.ID
+			memory.CandidateIndex = i
 		}
 
 		if _, err := p.memoryRepository.Save(ctx, memory); err != nil {
@@ -142,6 +152,12 @@ func (p *MemoryCandidateProcessor) Process(
 	}
 
 	return p.complete(ctx, candidate, workerID)
+}
+
+func isDeterministicValidationError(err error) bool {
+	return errors.Is(err, core.ErrAllExtractedMemoriesInvalid) ||
+		errors.Is(err, core.ErrInvalidExtractedMemory) ||
+		errors.Is(err, core.ErrInvalidExtractionSource)
 }
 
 func (p *MemoryCandidateProcessor) complete(
