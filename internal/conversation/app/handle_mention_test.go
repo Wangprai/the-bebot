@@ -933,3 +933,80 @@ func TestHandleMentionMoodErrorStopsPipeline(t *testing.T) {
 		t.Error("downstream dependencies should not be called on mood error")
 	}
 }
+
+type mockCommunitySyncer struct {
+	community core.CommunityContext
+	err       error
+	called    bool
+	event     core.MentionEvent
+}
+
+func (m *mockCommunitySyncer) SyncMentionContext(
+	ctx context.Context,
+	event core.MentionEvent,
+) (core.CommunityContext, error) {
+	m.called = true
+	m.event = event
+	return m.community, m.err
+}
+
+func TestHandleMentionInjectsCommunityContext(t *testing.T) {
+	useCase, _, _, generator, sender, event := newTestUseCase()
+	event.GuildName = "Go Guild"
+	event.UserDisplayName = "Alice"
+	event.UserNickname = "Ali"
+
+	syncer := &mockCommunitySyncer{
+		community: core.CommunityContext{
+			GuildID:          event.GuildID,
+			GuildName:        "Go Guild",
+			MemberUserID:     event.UserID,
+			MemberName:       "Alice",
+			MemberNickname:   "Ali",
+			InteractionCount: 5,
+		},
+	}
+
+	if err := useCase.SetCommunityContextSyncer(nil); err == nil {
+		t.Fatal("expected error for nil community context syncer")
+	}
+
+	if err := useCase.SetCommunityContextSyncer(syncer); err != nil {
+		t.Fatalf("SetCommunityContextSyncer() error = %v", err)
+	}
+
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("HandleMention() error = %v", err)
+	}
+
+	if !syncer.called {
+		t.Fatal("expected CommunityContextSyncer to be called")
+	}
+
+	if generator.receivedContext.Community == nil ||
+		generator.receivedContext.Community.GuildName != "Go Guild" ||
+		generator.receivedContext.Community.MemberNickname != "Ali" ||
+		generator.receivedContext.Community.InteractionCount != 5 {
+		t.Fatalf("expected Community context in LLM call, got %+v", generator.receivedContext.Community)
+	}
+
+	if !sender.called {
+		t.Error("expected MessageSender to be called")
+	}
+}
+
+func TestHandleMentionCommunitySyncErrorStopsPipeline(t *testing.T) {
+	useCase, _, _, generator, sender, event := newTestUseCase()
+
+	expectedErr := errors.New("community store unavailable")
+	_ = useCase.SetCommunityContextSyncer(&mockCommunitySyncer{err: expectedErr})
+
+	err := useCase.HandleMention(context.Background(), event)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected community sync error %v, got %v", expectedErr, err)
+	}
+
+	if generator.called || sender.called {
+		t.Error("downstream dependencies should not be called on community sync error")
+	}
+}

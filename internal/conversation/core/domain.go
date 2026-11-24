@@ -81,12 +81,15 @@ func (m Message) Validate() error {
 }
 
 type MentionEvent struct {
-	GuildID     string
-	ChannelID   string
-	MessageID   string
-	UserID      string
-	Content     string
-	MentionedAt time.Time
+	GuildID         string
+	GuildName       string
+	ChannelID       string
+	MessageID       string
+	UserID          string
+	UserDisplayName string
+	UserNickname    string
+	Content         string
+	MentionedAt     time.Time
 }
 
 func NewMentionEvent(
@@ -166,6 +169,16 @@ type MoodContext struct {
 	TemporaryIntensity int
 }
 
+type CommunityContext struct {
+	GuildID          string
+	GuildName        string
+	PrimaryLanguage  string
+	MemberUserID     string
+	MemberName       string
+	MemberNickname   string
+	InteractionCount int
+}
+
 type ConversationContext struct {
 	GuildID          string
 	ChannelID        string
@@ -174,6 +187,7 @@ type ConversationContext struct {
 	Memories         []MemoryContext
 	Personality      *PersonalityContext
 	Mood             *MoodContext
+	Community        *CommunityContext
 	CreatedAt        time.Time
 	ExpiresAt        time.Time
 }

@@ -578,3 +578,62 @@ func TestGenerateIncludesMoodSeparatelyFromPersonality(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 }
+
+func TestGenerateIncludesCommunityAndMemberContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			var request chatRequest
+
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+
+			systemPrompt := request.Messages[0].Content
+
+			for _, expected := range []string{
+				"Community and member context:",
+				"Community name: Bebot Hangout",
+				"Speaking member: Ali",
+				"Member interaction count with you: 7",
+			} {
+				if !strings.Contains(systemPrompt, expected) {
+					t.Errorf("system prompt missing %q:\n%s", expected, systemPrompt)
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"choices": [
+					{
+						"message": {
+							"content": "Hey Ali!"
+						}
+					}
+				]
+			}`))
+		},
+	))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL)
+
+	_, err := client.Generate(
+		context.Background(),
+		core.ConversationContext{
+			Messages: []core.Message{
+				{Content: "Hey Bebot"},
+			},
+			Community: &core.CommunityContext{
+				GuildID:          "guild-1",
+				GuildName:        "Bebot Hangout",
+				MemberUserID:     "user-1",
+				MemberName:       "Alice",
+				MemberNickname:   "Ali",
+				InteractionCount: 7,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+}

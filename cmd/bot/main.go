@@ -19,6 +19,9 @@ import (
 	"the-bebot/internal/platform/logger"
 	"the-bebot/internal/worker"
 
+	communityadapter "the-bebot/internal/community/adapter/conversation"
+	communitymongodb "the-bebot/internal/community/adapter/mongodb"
+	communityapp "the-bebot/internal/community/app"
 	memoryadapter "the-bebot/internal/memory/adapter/conversation"
 	memorymongodb "the-bebot/internal/memory/adapter/mongodb"
 	memoryapp "the-bebot/internal/memory/app"
@@ -337,6 +340,43 @@ func run() error {
 
 	moodResolver := moodadapter.NewMoodResolverAdapter(moodService)
 
+	// Initialize Community and Member Metadata Repositories
+	communityRepository, err := communitymongodb.NewCommunityRepository(db.Database)
+	if err != nil {
+		return fmt.Errorf("initialize community repository: %w", err)
+	}
+
+	memberRepository, err := communitymongodb.NewMemberRepository(db.Database)
+	if err != nil {
+		return fmt.Errorf("initialize member repository: %w", err)
+	}
+
+	commIndexCtx, commIndexCancel := context.WithTimeout(ctx, 10*time.Second)
+	err = communityRepository.EnsureIndexes(commIndexCtx)
+	commIndexCancel()
+	if err != nil {
+		return fmt.Errorf("ensure community indexes: %w", err)
+	}
+
+	memIndexCtx, memIndexCancel := context.WithTimeout(ctx, 10*time.Second)
+	err = memberRepository.EnsureIndexes(memIndexCtx)
+	memIndexCancel()
+	if err != nil {
+		return fmt.Errorf("ensure member indexes: %w", err)
+	}
+
+	appLogger.Info("Community and member indexes ensured")
+
+	syncCommunityUseCase, err := communityapp.NewSyncContextUseCase(
+		communityRepository,
+		memberRepository,
+	)
+	if err != nil {
+		return fmt.Errorf("initialize community sync use case: %w", err)
+	}
+
+	communitySyncer := communityadapter.NewCommunityContextAdapter(syncCommunityUseCase)
+
 	// Initialize Conversation Service
 	conversationService := core.NewConversationService()
 
@@ -368,6 +408,12 @@ func run() error {
 		moodResolver,
 	); err != nil {
 		return fmt.Errorf("configure mood resolver: %w", err)
+	}
+
+	if err := mentionHandler.SetCommunityContextSyncer(
+		communitySyncer,
+	); err != nil {
+		return fmt.Errorf("configure community context syncer: %w", err)
 	}
 
 	if err := mentionHandler.SetMaxRetrievedMemories(

@@ -85,3 +85,11 @@ type MoodResolver interface {
 		triggerContent string,
 	) (MoodContext, error)
 }
+
+// CommunityContextSyncer updates and returns lightweight community and member metadata.
+type CommunityContextSyncer interface {
+	SyncMentionContext(
+		ctx context.Context,
+		event MentionEvent,
+	) (CommunityContext, error)
+}

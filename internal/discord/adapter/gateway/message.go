@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -40,13 +41,25 @@ func toMentionEvent(
 		)
 	}
 
+	displayName := strings.TrimSpace(message.Author.GlobalName)
+	if displayName == "" {
+		displayName = strings.TrimSpace(message.Author.Username)
+	}
+
+	var nickname string
+	if message.Member != nil {
+		nickname = strings.TrimSpace(message.Member.Nick)
+	}
+
 	event := core.MentionEvent{
-		GuildID:     message.GuildID,
-		ChannelID:   message.ChannelID,
-		MessageID:   message.ID,
-		UserID:      message.Author.ID,
-		Content:     message.Content,
-		MentionedAt: message.Timestamp,
+		GuildID:         message.GuildID,
+		ChannelID:       message.ChannelID,
+		MessageID:       message.ID,
+		UserID:          message.Author.ID,
+		UserDisplayName: displayName,
+		UserNickname:    nickname,
+		Content:         message.Content,
+		MentionedAt:     message.Timestamp,
 	}
 
 	if err := event.Validate(); err != nil {

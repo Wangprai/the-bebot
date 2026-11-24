@@ -124,3 +124,54 @@ func TestToMentionEventRejectsNilMessage(t *testing.T) {
 		t.Fatal("expected error for nil message")
 	}
 }
+
+func TestToMentionEventExtractsRealDiscordIdentityMetadata(t *testing.T) {
+	now := time.Now().UTC()
+
+	msgWithGlobalAndNick := &discordgo.Message{
+		ID:        "msg-1",
+		GuildID:   "guild-1",
+		ChannelID: "ch-1",
+		Content:   "<@bot> hi",
+		Timestamp: now,
+		Author: &discordgo.User{
+			ID:         "user-1",
+			Username:   "alice_dev",
+			GlobalName: "Alice",
+		},
+		Member: &discordgo.Member{
+			Nick: "Ali",
+		},
+	}
+
+	event, err := toMentionEvent(msgWithGlobalAndNick)
+	if err != nil {
+		t.Fatalf("toMentionEvent() error = %v", err)
+	}
+
+	if event.UserDisplayName != "Alice" || event.UserNickname != "Ali" {
+		t.Errorf("unexpected identity metadata: display=%q nick=%q", event.UserDisplayName, event.UserNickname)
+	}
+
+	// Falls back to Username when GlobalName is empty, and leaves Nickname empty if absent.
+	msgUsernameOnly := &discordgo.Message{
+		ID:        "msg-2",
+		GuildID:   "guild-1",
+		ChannelID: "ch-1",
+		Content:   "<@bot> hi",
+		Timestamp: now,
+		Author: &discordgo.User{
+			ID:       "user-2",
+			Username: "bob_dev",
+		},
+	}
+
+	event2, err := toMentionEvent(msgUsernameOnly)
+	if err != nil {
+		t.Fatalf("toMentionEvent() error = %v", err)
+	}
+
+	if event2.UserDisplayName != "bob_dev" || event2.UserNickname != "" {
+		t.Errorf("unexpected fallback metadata: display=%q nick=%q", event2.UserDisplayName, event2.UserNickname)
+	}
+}

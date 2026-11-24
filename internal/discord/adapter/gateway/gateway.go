@@ -287,6 +287,12 @@ func (g *Gateway) handleMessageCreate(
 		return
 	}
 
+	if s != nil && s.State != nil {
+		if guild, err := s.State.Guild(message.GuildID); err == nil && guild != nil {
+			mentionEvent.GuildName = guild.Name
+		}
+	}
+
 	g.logger.Info(
 		"Bot mentioned",
 		"guild_id", mentionEvent.GuildID,

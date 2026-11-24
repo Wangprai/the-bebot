@@ -117,6 +117,10 @@ func (c *Client) Generate(
 		baseSystemPrompt = buildMoodSystemPrompt(baseSystemPrompt, *conversationContext.Mood)
 	}
 
+	if conversationContext.Community != nil {
+		baseSystemPrompt = buildCommunitySystemPrompt(baseSystemPrompt, *conversationContext.Community)
+	}
+
 	systemPrompt, err := buildMemorySystemPrompt(
 		baseSystemPrompt,
 		conversationContext.Memories,
@@ -217,6 +221,47 @@ func buildMoodSystemPrompt(
 	prompt.WriteString("- Let this mood naturally influence your tone and energy without violating Personality boundaries.")
 
 	return prompt.String()
+}
+
+func buildCommunitySystemPrompt(
+	systemPrompt string,
+	community core.CommunityContext,
+) string {
+	var lines []string
+
+	if name := strings.TrimSpace(community.GuildName); name != "" {
+		lines = append(lines, fmt.Sprintf("- Community name: %s", name))
+	}
+
+	if lang := strings.TrimSpace(community.PrimaryLanguage); lang != "" {
+		lines = append(lines, fmt.Sprintf("- Community primary language: %s", lang))
+	}
+
+	memberName := strings.TrimSpace(community.MemberNickname)
+	if memberName == "" {
+		memberName = strings.TrimSpace(community.MemberName)
+	}
+	if memberName != "" {
+		lines = append(lines, fmt.Sprintf("- Speaking member: %s", memberName))
+	}
+
+	if community.InteractionCount > 0 {
+		lines = append(lines, fmt.Sprintf("- Member interaction count with you: %d", community.InteractionCount))
+	}
+
+	if len(lines) == 0 {
+		return systemPrompt
+	}
+
+	var prompt strings.Builder
+	prompt.WriteString(systemPrompt)
+	prompt.WriteString("\n\nCommunity and member context:\n")
+	for _, line := range lines {
+		prompt.WriteString(line)
+		prompt.WriteByte('\n')
+	}
+
+	return strings.TrimSpace(prompt.String())
 }
 
 func buildMemorySystemPrompt(

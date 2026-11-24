@@ -25,6 +25,7 @@ type HandleMentionUseCase struct {
 	conversationRepository core.ConversationRepository
 	personalityProvider    core.PersonalityProvider
 	moodResolver           core.MoodResolver
+	communitySyncer        core.CommunityContextSyncer
 
 	maxMessages          int
 	maxRetrievedMemories int
@@ -126,6 +127,21 @@ func (uc *HandleMentionUseCase) SetMoodResolver(
 	return nil
 }
 
+func (uc *HandleMentionUseCase) SetCommunityContextSyncer(
+	syncer core.CommunityContextSyncer,
+) error {
+	if uc == nil {
+		return fmt.Errorf("handle mention use case is nil")
+	}
+
+	if syncer == nil {
+		return fmt.Errorf("community context syncer is required")
+	}
+
+	uc.communitySyncer = syncer
+	return nil
+}
+
 func (uc *HandleMentionUseCase) HandleMention(
 	ctx context.Context,
 	event core.MentionEvent,
@@ -217,6 +233,15 @@ func (uc *HandleMentionUseCase) HandleMention(
 		}
 
 		conversationContext.Mood = &moodCtx
+	}
+
+	if uc.communitySyncer != nil {
+		communityCtx, err := uc.communitySyncer.SyncMentionContext(ctx, event)
+		if err != nil {
+			return fmt.Errorf("sync community context: %w", err)
+		}
+
+		conversationContext.Community = &communityCtx
 	}
 
 	if uc.memoryRetriever != nil {
