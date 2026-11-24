@@ -235,11 +235,23 @@ Implemented workflow:
 1. Receive a Discord mention and build conversation context.
 2. Retrieve up to `MEMORY_MAX_RETRIEVED_MEMORIES` (default `5`) relevant memories (`community` scope + speaking `member` scope) via the `MemoryRetriever` port, updating usage tracking (`usage_count`, `last_used_at`).
 3. Include retrieved memories as JSON reference data with prompt-injection defense guidelines in the LLM system prompt.
-4. After replying, evaluate `CandidateRules` (Thai/English preference, fact, and promise signals, minimum 12 runes, ignoring bot messages).
+4. After replying, evaluate `CandidateRules` on the **trigger message only** (keeping earlier window messages as extraction context only; Thai/English preference, fact, and promise signals including Unicode curly apostrophes, minimum 12 runes, ignoring bot messages).
 5. Create a `MemoryCandidate` in MongoDB (`memory_candidates`), treating duplicate `(guild_id, message_id)` creation idempotently on redelivered events.
 6. Background `MemoryWorker` goroutines atomically claim pending, retry-ready, or lease-expired candidates via `ClaimNext`.
-7. `MemoryCandidateProcessor` extracts structured memories via `llm.MemoryExtractor` (prompt schema includes `source_message_id`), validates each item with `MemoryValidator` (authoritative source user ID, non-bot source check, sensitive-pattern filtering), preserves valid sibling memories if another item in the batch is invalid, saves via idempotent SHA-256 upsert to `memories`, and updates candidate status with ownership/lock verification (`UpdateProcessingResult`).
+7. `MemoryCandidateProcessor` extracts structured memories via `llm.MemoryExtractor` (prompt schema includes `source_message_id`), validates each item with `MemoryValidator` (authoritative source user ID, non-bot source check, sensitive-pattern filtering), preserves valid sibling memories if another item in the batch is invalid, saves via candidate-level idempotency and content-based deduplication (`content_dedup_key`, advancing `importance` and `updated_at` to max on duplicates) to `memories`, and updates candidate status with ownership/lock verification (`UpdateProcessingResult`).
 8. A dedicated cleanup goroutine in `MemoryWorker` periodically invokes `CandidateRepository.DeleteExpired` without blocking candidate processing.
+
+### One-off deduplication cleanup for legacy data
+
+For existing deployments created before `content_dedup_key` was introduced, a manual, idempotent cleanup helper is available (never executed automatically by `cmd/bot`):
+
+```bash
+# Dry-run (default, inspects without mutating):
+go run ./cmd/dedup-memories
+
+# Apply cleanup across all guilds (or add --guild <guild_id>):
+go run ./cmd/dedup-memories --apply
+```
 
 ---
 
@@ -272,7 +284,7 @@ MongoDB collections and indexes ensured at startup:
 
 | Collection | Responsibility | Key Indexes | Status |
 |---|---|---|---|
-| `memories` | Long-term memories (`community` & `member` scopes) | `idx_memories_community_relevance`, `idx_memories_member_relevance`, unique partial `idx_memories_idempotency`, unique partial `idx_memories_candidate_item` | Implemented & Verified (MongoDB tests) |
+| `memories` | Long-term memories (`community` & `member` scopes) | `idx_memories_community_relevance`, `idx_memories_member_relevance`, unique partial `idx_memories_idempotency`, unique partial `idx_memories_candidate_item`, unique partial `idx_memories_content_dedup` | Implemented & Verified (MongoDB tests) |
 | `memory_candidates` | Durable candidate queue and processing leases | unique `(guild_id, message_id)`, pending/retry index, processing lock index, expiration index | Implemented & Verified (MongoDB tests) |
 | `conversation_contexts` | Latest conversation context snapshot per `(guild_id, channel_id)` | unique `(guild_id, channel_id)`, TTL index on `expires_at` (`expireAfterSeconds: 0`) | Implemented & Verified (MongoDB tests) |
 | `community_moods` | Persistent guild-level mood state | unique `guild_id` | Implemented & Verified (MongoDB tests) |
