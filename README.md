@@ -4,7 +4,7 @@ The Bebot is a Discord bot project written in Go. The project aims to create a b
 
 The bot uses an LLM to generate natural-language responses, while application behavior, business rules, personality, mood state, conversation context, memory processing, and community/member metadata are handled by the Go application.
 
-> **Project status:** All approved MVP components (Discord Gateway, Conversation Context persistence, Global Go Personality, Mood system, Long-term Memory pipeline, and Community/Member metadata) are implemented and verified with automated unit tests, real MongoDB integration tests, and an automated full-MVP pipeline integration test (`httptest` LLM + real MongoDB). Race detection (`go test -race`) is currently blocked in environments without a `gcc` C compiler, and live production Discord Gateway + external LLM E2E verification has not been executed in automated runs.
+> **Project status:** All approved MVP components (Discord Gateway, Conversation Context persistence, Global Go Personality, Mood system, Long-term Memory pipeline, and Community/Member metadata) plus review hardening fixes are implemented and verified with automated unit tests, real MongoDB integration tests, race detection (`go test ./... -count=1 -race`), and full-MVP pipeline integration tests (`httptest` LLM + real MongoDB). Live production Discord Gateway + external LLM E2E verification has not been executed in automated runs.
 
 ---
 
@@ -155,14 +155,19 @@ Personality        Mood System        Community/Member   Memory Retrieval
 
 The bot integrates with Discord through DiscordGo (`internal/discord/adapter/gateway/`).
 
+### Required Discord Privileged Intent
+
+In the **Discord Developer Portal** (Bot settings), you **must enable the `Message Content Intent`** privileged gateway intent. The bot requests `IntentsGuilds | IntentsGuildMessages | IntentsMessageContent` so it can read mention text and recent guild channel context.
+
 Implemented interaction behavior:
 
-- Connect to the Discord Gateway with graceful shutdown waiting for in-flight mention handlers.
+- Connect to the Discord Gateway with graceful shutdown that stops accepting new events, closes the Discord session, waits up to 30 seconds for in-flight mention handlers with a non-canceled handler context, and only then cancels the handler context.
 - Ignore Direct Messages (MVP scope is guild channels only).
 - Ignore messages authored by any bot (`message.Author.Bot == true`) as well as The Bebot itself to prevent bot-to-bot response loops.
-- Detect explicit bot mentions and extract real Discord identity metadata (`GuildName` from session state, `GlobalName`/`Username`, and `Member.Nick`).
+- Detect explicit bot mentions, enforce per-user cooldown (`MENTION_USER_COOLDOWN`) and global concurrency cap (`MAX_CONCURRENT_MENTIONS`), and extract real Discord identity metadata (`GuildName` from session state, `Member.Nick` / `GlobalName` / `Username`).
 - Retrieve recent channel messages via Discord REST API (handling empty `guild_id` on REST message payloads while still rejecting mismatched non-empty guild IDs or mismatched channel IDs).
-- Generate a response using the LLM and send the reply back to Discord.
+- Show Discord's typing indicator while generating the LLM response.
+- Send replies via `ChannelMessageSendComplex` with empty `AllowedMentions.Parse` (preventing unintended `@everyone`, `@here`, role, or user pings), referencing the trigger message (`FailIfNotExists=false`) on the first chunk, and splitting responses over 2000 runes cleanly at paragraph/line/word boundaries without corrupting multi-byte Thai text.
 
 ---
 
@@ -255,7 +260,7 @@ Conversation Context (`internal/conversation/`) provides chronological recent me
 Lightweight identity metadata (`internal/community/`) is persisted separately from long-term `Memory`:
 
 - **Communities (`communities`):** `guild_id` (unique), `name` (real Discord guild name when available), `primary_language` (never guessed from a single message; remains unset unless explicitly stored), `active_since`, `updated_at`.
-- **Members (`members`):** `(guild_id, user_id)` (unique), `display_name` (Discord `GlobalName` / `Username`), `nickname` (Discord guild `Nick`), `interaction_count` (atomically incremented per mention), `last_seen_at`.
+- **Members (`members`):** `(guild_id, user_id)` (unique), `display_name` (Discord `GlobalName` / `Username`), `nickname` (Discord guild `Nick`, `$unset` when cleared), `interaction_count` (atomically incremented only after a reply is sent successfully), `last_seen_at`.
 
 Long-term facts, preferences, events, jokes, promises, catchphrases, and interaction patterns remain exclusively in `memories` (`community` and `member` scopes).
 
@@ -267,7 +272,7 @@ MongoDB collections and indexes ensured at startup:
 
 | Collection | Responsibility | Key Indexes | Status |
 |---|---|---|---|
-| `memories` | Long-term memories (`community` & `member` scopes) | `idx_memories_community_relevance`, `idx_memories_member_relevance`, unique partial `idx_memories_idempotency` | Implemented & Verified (MongoDB tests) |
+| `memories` | Long-term memories (`community` & `member` scopes) | `idx_memories_community_relevance`, `idx_memories_member_relevance`, unique partial `idx_memories_idempotency`, unique partial `idx_memories_candidate_item` | Implemented & Verified (MongoDB tests) |
 | `memory_candidates` | Durable candidate queue and processing leases | unique `(guild_id, message_id)`, pending/retry index, processing lock index, expiration index | Implemented & Verified (MongoDB tests) |
 | `conversation_contexts` | Latest conversation context snapshot per `(guild_id, channel_id)` | unique `(guild_id, channel_id)`, TTL index on `expires_at` (`expireAfterSeconds: 0`) | Implemented & Verified (MongoDB tests) |
 | `community_moods` | Persistent guild-level mood state | unique `guild_id` | Implemented & Verified (MongoDB tests) |
@@ -354,38 +359,55 @@ Unused legacy keys `MEMORY_MAX_CANDIDATES` and `MEMORY_QUEUE_SIZE` were removed 
 | Community & Member lightweight metadata (`communities`, `members`) | **Implemented** | Unit tests + real MongoDB integration tests + full-MVP E2E test pass |
 | Configuration loading & validation | **Implemented** | Unit tests pass (`internal/platform/config`) |
 | Automated Full-MVP Pipeline Verification (MongoDB + `httptest` LLM) | **Implemented & Verified** | `TestMemoryPipelineEndToEndWithMongoDBAndLLM` and `TestFullMVPPipelineEndToEndWithMongoDBAndLLM` pass against real MongoDB |
-| Race detector verification (`go test -race ./...`) | **Blocked** | Requires `gcc` C compiler in `%PATH%` for CGO on Windows |
+| Race detector verification (`go test ./... -count=1 -race`) | **Verified** | Passes locally with `gcc` and in GitHub Actions CI |
 | Live Production Discord + External LLM E2E Verification | **Unverified** | Not executed against live Discord/external LLM APIs in automated test run |
 
 ---
 
 ## Testing and Verification
 
-Verified commands:
+### Running locally
+
+1. Copy `.env.example` to `.env` and fill in `DISCORD_BOT_TOKEN`, `MONGODB_URI`, `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL`.
+2. Ensure **Message Content Intent** is enabled for your bot in the Discord Developer Portal.
+3. Start MongoDB locally (or via Docker: `docker run -d -p 27017:27017 mongo:7`).
+4. Run the bot:
 
 ```bash
-go test -v ./... -count=1
-go vet ./...
+go run ./cmd/bot
+```
+
+### Running with Docker
+
+Build and run the multi-stage, non-root container image:
+
+```bash
+docker build -t the-bebot .
+docker run --rm --env-file .env the-bebot
+```
+
+### Verification and CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs formatting checks, `go vet`, full race-enabled unit and MongoDB integration tests (using a `mongo:7` service container), and `go build ./cmd/bot` on every push to `main` and every pull request.
+
+Local verification commands:
+
+```bash
 gofmt -l .
+go vet ./...
+go test ./... -count=1 -race
 go build ./cmd/bot
 ```
 
-Race detector command (requires a C compiler such as MinGW-w64 `gcc` on `%PATH%`):
+> Note: `-race` requires a C compiler (`gcc`, e.g. MSYS2 MinGW/UCRT64 on Windows) on `PATH`.
 
-```bash
-go test -race ./... -count=1
-```
-
-MongoDB integration tests connect to `MONGODB_TEST_URI` (defaulting to `mongodb://127.0.0.1:27017`), create isolated temporary databases per test, and drop them automatically during test cleanup.
+MongoDB integration tests connect to `MONGODB_TEST_URI` (defaulting to `mongodb://127.0.0.1:27017`), create isolated temporary databases per test, and drop them automatically during test cleanup. They skip cleanly if MongoDB is unreachable.
 
 ---
 
 ## Known Limitations and Remaining Verification
 
-1. **Race detector (`BLOCKED`):** `go test -race ./... -count=1` requires `gcc` (CGO) in `%PATH%`, which is not installed in the current Windows environment. Run `go test -race ./... -count=1` once MinGW-w64 / GCC is available.
-2. **Live external E2E (`UNVERIFIED`):** End-to-end tests verify all real Go components and all 6 real MongoDB collections using `httptest` for OpenAI-compatible LLM endpoints. Live verification with a real Discord guild and external LLM provider should be performed manually with valid credentials in `.env`.
-3. **LLM response length:** Discord enforces a 2000-character message limit; very long LLM replies are not currently chunked in `DiscordClient.Send`.
-4. **Memory usage sorting nuance:** `MemoryRepository.UpdateUsage` updates `updated_at`, which can favor previously-retrieved memories over newer equal-importance memories.
+1. **Live external E2E (`UNVERIFIED`):** End-to-end tests verify all real Go components and all 6 real MongoDB collections using `httptest` for OpenAI-compatible LLM endpoints. Live verification with a real Discord guild and external LLM provider should be performed manually with valid credentials in `.env` and Message Content Intent enabled.
 
 ---
 
