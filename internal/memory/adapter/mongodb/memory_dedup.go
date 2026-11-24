@@ -137,6 +137,13 @@ func (r *MemoryRepository) DeduplicateMemories(
 			}
 		}
 
+		sourceUserSet := make(map[string]struct{})
+		for _, uid := range survivor.SourceUserIDs {
+			if u := strings.TrimSpace(uid); u != "" {
+				sourceUserSet[u] = struct{}{}
+			}
+		}
+
 		loserIDs := make([]primitive.ObjectID, 0, len(losers))
 		for _, loser := range losers {
 			loserIDs = append(loserIDs, loser.ID)
@@ -165,6 +172,11 @@ func (r *MemoryRepository) DeduplicateMemories(
 					tagSet[t] = struct{}{}
 				}
 			}
+			for _, uid := range loser.SourceUserIDs {
+				if u := strings.TrimSpace(uid); u != "" {
+					sourceUserSet[u] = struct{}{}
+				}
+			}
 		}
 
 		mergedTags := make([]string, 0, len(tagSet))
@@ -172,6 +184,12 @@ func (r *MemoryRepository) DeduplicateMemories(
 			mergedTags = append(mergedTags, tag)
 		}
 		sort.Strings(mergedTags)
+
+		mergedSourceUsers := make([]string, 0, len(sourceUserSet))
+		for uid := range sourceUserSet {
+			mergedSourceUsers = append(mergedSourceUsers, uid)
+		}
+		sort.Strings(mergedSourceUsers)
 
 		report.GroupsMerged++
 		report.DuplicatesDeleted += len(loserIDs)
@@ -197,6 +215,9 @@ func (r *MemoryRepository) DeduplicateMemories(
 			"last_used_at":      mergedLastUsedAt,
 			"tags":              mergedTags,
 			"content_dedup_key": dedupKey,
+		}
+		if len(mergedSourceUsers) > 0 {
+			setFields["source_user_ids"] = mergedSourceUsers
 		}
 
 		if _, err := r.collection.UpdateOne(

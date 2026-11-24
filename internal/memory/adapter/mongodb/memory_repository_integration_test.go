@@ -88,12 +88,13 @@ func TestMemoryRepositoryIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Save community memory.
+	// Save corroborated community memory (2 distinct source users).
 	communityMemory := newTestMemory(
 		core.MemoryScopeCommunity,
 		"",
 		"Community likes playing games",
 	)
+	communityMemory.SourceUserIDs = []string{"user-123", "user-456"}
 
 	communityID, err := repository.Save(ctx, communityMemory)
 	if err != nil {
@@ -276,6 +277,8 @@ func TestMemoryRepositoryEnsureIndexes(t *testing.T) {
 		"idx_memories_idempotency",
 		"idx_memories_candidate_item",
 		"idx_memories_content_dedup",
+		"idx_memories_text_search",
+		"idx_memories_expires_at",
 	}
 
 	for _, name := range expected {
@@ -705,5 +708,371 @@ func TestMemoryRepositoryDeduplicateMemoriesCleanupHelper(t *testing.T) {
 	}
 	if secondReport.GroupsMerged != 0 || secondReport.DuplicatesDeleted != 0 || secondReport.Backfilled != 0 {
 		t.Errorf("expected idempotent second run with zero changes, got %+v", secondReport)
+	}
+}
+
+func TestMemoryRepositoryTextSearchRankingAndMinConfidence(t *testing.T) {
+	repository := setupMemoryRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := repository.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes failed: %v", err)
+	}
+
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+
+	highImpUnrelated := newTestMemory(core.MemoryScopeMember, "user-rank-q", "Works on distributed databases")
+	highImpUnrelated.Importance = 5
+	highImpUnrelated.Confidence = 0.95
+	highImpUnrelated.Tags = []string{"database"}
+	highImpUnrelated.CreatedAt = now
+	highImpUnrelated.UpdatedAt = now
+	unrelatedID, err := repository.Save(ctx, highImpUnrelated)
+	if err != nil {
+		t.Fatalf("Save highImpUnrelated failed: %v", err)
+	}
+
+	medImpTopic := newTestMemory(core.MemoryScopeMember, "user-rank-q", "Loves brewing pour-over espresso coffee")
+	medImpTopic.Importance = 3
+	medImpTopic.Confidence = 0.85
+	medImpTopic.Tags = []string{"espresso", "coffee"}
+	medImpTopic.CreatedAt = now.Add(-24 * time.Hour)
+	medImpTopic.UpdatedAt = now.Add(-24 * time.Hour)
+	topicID, err := repository.Save(ctx, medImpTopic)
+	if err != nil {
+		t.Fatalf("Save medImpTopic failed: %v", err)
+	}
+
+	lowConfTopic := newTestMemory(core.MemoryScopeMember, "user-rank-q", "Might try espresso sometime")
+	lowConfTopic.Importance = 5
+	lowConfTopic.Confidence = 0.25
+	lowConfTopic.Tags = []string{"espresso"}
+	lowConfTopic.CreatedAt = now
+	lowConfTopic.UpdatedAt = now
+	if _, err := repository.Save(ctx, lowConfTopic); err != nil {
+		t.Fatalf("Save lowConfTopic failed: %v", err)
+	}
+
+	// Topic query ranks espresso memory above higher-importance unrelated memory and drops low-confidence memory.
+	results, err := repository.FindRelevantByQuery(ctx, core.RetrievalQuery{
+		GuildID:                   "guild-123",
+		UserID:                    "user-rank-q",
+		QueryText:                 "What espresso beans do you recommend?",
+		Limit:                     5,
+		MinConfidence:             0.5,
+		MinCommunityCorroborators: 2,
+		Now:                       now,
+	})
+	if err != nil {
+		t.Fatalf("FindRelevantByQuery failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results (low confidence excluded), got %d", len(results))
+	}
+	if results[0].ID != topicID {
+		t.Errorf("topic match should rank first: got %q, want %q", results[0].ID, topicID)
+	}
+	if results[1].ID != unrelatedID {
+		t.Errorf("expected unrelated high-importance second: got %q, want %q", results[1].ID, unrelatedID)
+	}
+
+	// Unrelated query falls back to importance + confidence + recency ordering.
+	fallbackResults, err := repository.FindRelevantByQuery(ctx, core.RetrievalQuery{
+		GuildID:                   "guild-123",
+		UserID:                    "user-rank-q",
+		QueryText:                 "completely unrelated badminton question",
+		Limit:                     5,
+		MinConfidence:             0.5,
+		MinCommunityCorroborators: 2,
+		Now:                       now,
+	})
+	if err != nil {
+		t.Fatalf("FindRelevantByQuery fallback failed: %v", err)
+	}
+	if len(fallbackResults) != 2 || fallbackResults[0].ID != unrelatedID {
+		t.Errorf("fallback should rank high-importance memory first: got %+v", fallbackResults)
+	}
+}
+
+func TestMemoryRepositoryCommunityCorroborationPreventsSingleUserPoisoning(t *testing.T) {
+	repository := setupMemoryRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := repository.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes failed: %v", err)
+	}
+
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+
+	// User A injects a community memory.
+	fromUserA := newTestMemory(core.MemoryScopeCommunity, "", "Friday night is Go study club")
+	fromUserA.Type = core.MemoryTypeEvent
+	fromUserA.CandidateID = "cand-a1"
+	fromUserA.CandidateIndex = 0
+	fromUserA.Confidence = 0.85
+	fromUserA.SourceUserIDs = []string{"user-A"}
+	fromUserA.CreatedAt = now
+	fromUserA.UpdatedAt = now
+
+	memID, err := repository.Save(ctx, fromUserA)
+	if err != nil {
+		t.Fatalf("Save fromUserA failed: %v", err)
+	}
+
+	// User A repeats the same fact: still only 1 distinct user, so NOT retrievable.
+	repeatUserA := fromUserA
+	repeatUserA.CandidateID = "cand-a2"
+	repeatUserA.SourceMessageID = "msg-a2"
+	repeatUserA.UpdatedAt = now.Add(time.Minute)
+	if _, err := repository.Save(ctx, repeatUserA); err != nil {
+		t.Fatalf("Save repeatUserA failed: %v", err)
+	}
+
+	beforeCorroboration, err := repository.FindRelevantByQuery(ctx, core.RetrievalQuery{
+		GuildID:                   "guild-123",
+		UserID:                    "user-C",
+		QueryText:                 "Go study club",
+		Limit:                     5,
+		MinConfidence:             0.5,
+		MinCommunityCorroborators: 2,
+		Now:                       now.Add(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("FindRelevantByQuery before corroboration failed: %v", err)
+	}
+	if len(beforeCorroboration) != 0 {
+		t.Fatalf("uncorroborated single-user community memory must not be retrievable, got %d", len(beforeCorroboration))
+	}
+
+	// User B corroborates the same community memory.
+	fromUserB := fromUserA
+	fromUserB.CandidateID = "cand-b1"
+	fromUserB.SourceMessageID = "msg-b1"
+	fromUserB.SourceUserIDs = []string{"user-B"}
+	fromUserB.UpdatedAt = now.Add(3 * time.Minute)
+	corroboratedID, err := repository.Save(ctx, fromUserB)
+	if err != nil {
+		t.Fatalf("Save fromUserB failed: %v", err)
+	}
+	if corroboratedID != memID {
+		t.Fatalf("corroboration should merge into %q, got %q", memID, corroboratedID)
+	}
+
+	afterCorroboration, err := repository.FindRelevantByQuery(ctx, core.RetrievalQuery{
+		GuildID:                   "guild-123",
+		UserID:                    "user-C",
+		QueryText:                 "Go study club",
+		Limit:                     5,
+		MinConfidence:             0.5,
+		MinCommunityCorroborators: 2,
+		Now:                       now.Add(4 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("FindRelevantByQuery after corroboration failed: %v", err)
+	}
+	if len(afterCorroboration) != 1 || afterCorroboration[0].ID != memID {
+		t.Fatalf("expected corroborated community memory %q, got %+v", memID, afterCorroboration)
+	}
+	if len(afterCorroboration[0].SourceUserIDs) != 2 {
+		t.Errorf("expected 2 SourceUserIDs, got %v", afterCorroboration[0].SourceUserIDs)
+	}
+}
+
+func TestMemoryRepositoryUnusedTTLAndExpiry(t *testing.T) {
+	repository := setupMemoryRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := repository.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes failed: %v", err)
+	}
+
+	if err := repository.SetUnusedTTL(24*time.Hour, 2); err != nil {
+		t.Fatalf("SetUnusedTTL failed: %v", err)
+	}
+
+	baseTime := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	lowUnused := newTestMemory(core.MemoryScopeMember, "user-ttl", "Tried matcha latte once")
+	lowUnused.Importance = 2
+	lowUnused.CreatedAt = baseTime
+	lowUnused.UpdatedAt = baseTime
+	lowUnusedID, err := repository.Save(ctx, lowUnused)
+	if err != nil {
+		t.Fatalf("Save lowUnused failed: %v", err)
+	}
+
+	lowUsed := newTestMemory(core.MemoryScopeMember, "user-ttl", "Likes iced americano")
+	lowUsed.Importance = 2
+	lowUsed.CreatedAt = baseTime
+	lowUsed.UpdatedAt = baseTime
+	lowUsedID, err := repository.Save(ctx, lowUsed)
+	if err != nil {
+		t.Fatalf("Save lowUsed failed: %v", err)
+	}
+
+	highImp := newTestMemory(core.MemoryScopeMember, "user-ttl", "Is a senior Go engineer")
+	highImp.Importance = 4
+	highImp.CreatedAt = baseTime
+	highImp.UpdatedAt = baseTime
+	highImpID, err := repository.Save(ctx, highImp)
+	if err != nil {
+		t.Fatalf("Save highImp failed: %v", err)
+	}
+
+	// Mark lowUsed as used -> clears its expires_at so it won't expire.
+	if err := repository.UpdateUsage(ctx, "guild-123", lowUsedID, baseTime.Add(2*time.Hour)); err != nil {
+		t.Fatalf("UpdateUsage failed: %v", err)
+	}
+
+	reloadedHigh, err := repository.FindByID(ctx, "guild-123", highImpID)
+	if err != nil {
+		t.Fatalf("FindByID highImp failed: %v", err)
+	}
+	if reloadedHigh.ExpiresAt != nil {
+		t.Errorf("high-importance memory should not have ExpiresAt, got %v", reloadedHigh.ExpiresAt)
+	}
+
+	reloadedLowUsed, err := repository.FindByID(ctx, "guild-123", lowUsedID)
+	if err != nil {
+		t.Fatalf("FindByID lowUsed failed: %v", err)
+	}
+	if reloadedLowUsed.ExpiresAt != nil {
+		t.Errorf("used memory should clear ExpiresAt, got %v", reloadedLowUsed.ExpiresAt)
+	}
+
+	reloadedLowUnused, err := repository.FindByID(ctx, "guild-123", lowUnusedID)
+	if err != nil {
+		t.Fatalf("FindByID lowUnused failed: %v", err)
+	}
+	if reloadedLowUnused.ExpiresAt == nil {
+		t.Fatal("low-importance unused memory should have ExpiresAt set")
+	}
+
+	// After 25 hours, lowUnused is excluded at retrieval time while lowUsed and highImp remain.
+	afterExpiry := baseTime.Add(25 * time.Hour)
+	active, err := repository.FindRelevantByQuery(ctx, core.RetrievalQuery{
+		GuildID:                   "guild-123",
+		UserID:                    "user-ttl",
+		Limit:                     10,
+		MinConfidence:             0.5,
+		MinCommunityCorroborators: 2,
+		Now:                       afterExpiry,
+	})
+	if err != nil {
+		t.Fatalf("FindRelevantByQuery after expiry failed: %v", err)
+	}
+	if len(active) != 2 {
+		t.Fatalf("expected 2 non-expired memories, got %d", len(active))
+	}
+	for _, m := range active {
+		if m.ID == lowUnusedID {
+			t.Errorf("expired memory %q should not be returned", lowUnusedID)
+		}
+	}
+
+	deleted, err := repository.DeleteExpiredMemories(ctx, afterExpiry)
+	if err != nil {
+		t.Fatalf("DeleteExpiredMemories failed: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("DeleteExpiredMemories deleted = %d, want 1", deleted)
+	}
+}
+
+func TestMemoryRepositoryConsolidateNearDuplicates(t *testing.T) {
+	repository := setupMemoryRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := repository.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes failed: %v", err)
+	}
+
+	t1 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+
+	nearA := newTestMemory(core.MemoryScopeCommunity, "", "Friday night is Go study club for members")
+	nearA.Type = core.MemoryTypeEvent
+	nearA.Importance = 4
+	nearA.Confidence = 0.85
+	nearA.Tags = []string{"go"}
+	nearA.SourceUserIDs = []string{"user-1"}
+	nearA.CreatedAt = t1
+	nearA.UpdatedAt = t1
+	if _, err := repository.Save(ctx, nearA); err != nil {
+		t.Fatalf("Save nearA failed: %v", err)
+	}
+
+	nearB := newTestMemory(core.MemoryScopeCommunity, "", "Friday night is Go study club for member")
+	nearB.Type = core.MemoryTypeEvent
+	nearB.Importance = 3
+	nearB.Confidence = 0.92
+	nearB.Tags = []string{"study"}
+	nearB.SourceUserIDs = []string{"user-2"}
+	nearB.CreatedAt = t2
+	nearB.UpdatedAt = t2
+	if _, err := repository.Save(ctx, nearB); err != nil {
+		t.Fatalf("Save nearB failed: %v", err)
+	}
+
+	distinct := newTestMemory(core.MemoryScopeCommunity, "", "Community loves weekend ramen outings")
+	distinct.Type = core.MemoryTypeEvent
+	distinct.SourceUserIDs = []string{"user-1", "user-2"}
+	distinct.CreatedAt = t1
+	distinct.UpdatedAt = t1
+	if _, err := repository.Save(ctx, distinct); err != nil {
+		t.Fatalf("Save distinct failed: %v", err)
+	}
+
+	dryReport, err := repository.ConsolidateNearDuplicates(ctx, "guild-123", 0.70, true)
+	if err != nil {
+		t.Fatalf("ConsolidateNearDuplicates dry-run failed: %v", err)
+	}
+	if dryReport.GroupsMerged != 1 || dryReport.MergedCount != 1 {
+		t.Fatalf("unexpected dry-run consolidation report: %+v", dryReport)
+	}
+
+	applyReport, err := repository.ConsolidateNearDuplicates(ctx, "guild-123", 0.70, false)
+	if err != nil {
+		t.Fatalf("ConsolidateNearDuplicates apply failed: %v", err)
+	}
+	if applyReport.GroupsMerged != 1 || applyReport.MergedCount != 1 {
+		t.Fatalf("unexpected apply consolidation report: %+v", applyReport)
+	}
+
+	// Merging nearA (user-1) and nearB (user-2) unions SourceUserIDs -> now corroborated by 2 users!
+	results, err := repository.FindRelevantByQuery(ctx, core.RetrievalQuery{
+		GuildID:                   "guild-123",
+		UserID:                    "user-3",
+		QueryText:                 "Go study club",
+		Limit:                     5,
+		MinConfidence:             0.5,
+		MinCommunityCorroborators: 2,
+		Now:                       t2.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("FindRelevantByQuery after consolidation failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 corroborated community memories after consolidation, got %d", len(results))
+	}
+	if results[0].Confidence != 0.92 || len(results[0].SourceUserIDs) != 2 {
+		t.Errorf("consolidated memory metadata unexpected: conf=%v users=%v", results[0].Confidence, results[0].SourceUserIDs)
+	}
+
+	// Second run is idempotent.
+	secondReport, err := repository.ConsolidateNearDuplicates(ctx, "guild-123", 0.70, false)
+	if err != nil {
+		t.Fatalf("second ConsolidateNearDuplicates failed: %v", err)
+	}
+	if secondReport.GroupsMerged != 0 || secondReport.MergedCount != 0 {
+		t.Errorf("expected idempotent second consolidation run, got %+v", secondReport)
 	}
 }

@@ -21,6 +21,11 @@ type MemoryRepository interface {
 		limit int,
 	) ([]Memory, error)
 
+	FindRelevantByQuery(
+		ctx context.Context,
+		query RetrievalQuery,
+	) ([]Memory, error)
+
 	UpdateUsage(
 		ctx context.Context,
 		guildID string,

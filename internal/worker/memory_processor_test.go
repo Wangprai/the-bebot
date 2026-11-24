@@ -89,6 +89,13 @@ func (m *mockProcessorMemoryRepository) FindRelevant(
 	return nil, nil
 }
 
+func (m *mockProcessorMemoryRepository) FindRelevantByQuery(
+	ctx context.Context,
+	query core.RetrievalQuery,
+) ([]core.Memory, error) {
+	return nil, nil
+}
+
 func (m *mockProcessorMemoryRepository) UpdateUsage(
 	ctx context.Context,
 	guildID, memoryID string,

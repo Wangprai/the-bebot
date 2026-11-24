@@ -80,6 +80,32 @@ func (r *MemoryRepository) EnsureIndexes(ctx context.Context) error {
 					},
 				}),
 		},
+		{
+			Keys: bson.D{
+				{Key: "content", Value: "text"},
+				{Key: "tags", Value: "text"},
+			},
+			Options: options.Index().
+				SetName("idx_memories_text_search").
+				SetDefaultLanguage("none").
+				SetWeights(bson.D{
+					{Key: "content", Value: 2},
+					{Key: "tags", Value: 3},
+				}),
+		},
+		{
+			Keys: bson.D{
+				{Key: "expires_at", Value: 1},
+			},
+			Options: options.Index().
+				SetName("idx_memories_expires_at").
+				SetExpireAfterSeconds(0).
+				SetPartialFilterExpression(bson.M{
+					"expires_at": bson.M{
+						"$type": "date",
+					},
+				}),
+		},
 	}
 
 	_, err := r.collection.Indexes().CreateMany(ctx, indexes)

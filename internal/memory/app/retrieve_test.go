@@ -56,6 +56,13 @@ func (m *mockMemoryRepository) FindRelevant(
 	return m.memories, m.findErr
 }
 
+func (m *mockMemoryRepository) FindRelevantByQuery(
+	ctx context.Context,
+	query core.RetrievalQuery,
+) ([]core.Memory, error) {
+	return m.FindRelevant(ctx, query.GuildID, query.UserID, query.Limit)
+}
+
 func (m *mockMemoryRepository) UpdateUsage(
 	ctx context.Context,
 	guildID string,

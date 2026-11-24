@@ -23,14 +23,17 @@ type memoryDocument struct {
 	Confidence      float64            `bson:"confidence"`
 	Tags            []string           `bson:"tags"`
 	SourceMessageID string             `bson:"source_message_id"`
+	SourceUserIDs   []string           `bson:"source_user_ids,omitempty"`
 	CandidateID     string             `bson:"candidate_id,omitempty"`
 	CandidateIndex  *int               `bson:"candidate_index,omitempty"`
 	UsageCount      int                `bson:"usage_count"`
 	IdempotencyKey  string             `bson:"idempotency_key,omitempty"`
 	ContentDedupKey string             `bson:"content_dedup_key,omitempty"`
 	LastUsedAt      *time.Time         `bson:"last_used_at"`
+	ExpiresAt       *time.Time         `bson:"expires_at,omitempty"`
 	CreatedAt       time.Time          `bson:"created_at"`
 	UpdatedAt       time.Time          `bson:"updated_at"`
+	TextScore       float64            `bson:"text_score,omitempty"`
 }
 
 func toMemoryDocument(memory core.Memory) memoryDocument {
@@ -44,9 +47,11 @@ func toMemoryDocument(memory core.Memory) memoryDocument {
 		Confidence:      memory.Confidence,
 		Tags:            memory.Tags,
 		SourceMessageID: memory.SourceMessageID,
+		SourceUserIDs:   memory.SourceUserIDs,
 		CandidateID:     memory.CandidateID,
 		UsageCount:      memory.UsageCount,
 		LastUsedAt:      memory.LastUsedAt,
+		ExpiresAt:       memory.ExpiresAt,
 		CreatedAt:       memory.CreatedAt,
 		UpdatedAt:       memory.UpdatedAt,
 	}
@@ -82,10 +87,12 @@ func (d memoryDocument) toDomain() (core.Memory, error) {
 		Confidence:      d.Confidence,
 		Tags:            d.Tags,
 		SourceMessageID: d.SourceMessageID,
+		SourceUserIDs:   d.SourceUserIDs,
 		CandidateID:     d.CandidateID,
 		CandidateIndex:  candidateIndex,
 		UsageCount:      d.UsageCount,
 		LastUsedAt:      d.LastUsedAt,
+		ExpiresAt:       d.ExpiresAt,
 		CreatedAt:       d.CreatedAt,
 		UpdatedAt:       d.UpdatedAt,
 	})
