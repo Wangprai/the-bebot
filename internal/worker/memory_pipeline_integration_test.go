@@ -20,12 +20,22 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 
 	"the-bebot/internal/ai/adapter/llm"
+	communityconv "the-bebot/internal/community/adapter/conversation"
+	communitymongo "the-bebot/internal/community/adapter/mongodb"
+	communityapp "the-bebot/internal/community/app"
+	convmongo "the-bebot/internal/conversation/adapter/mongodb"
 	convapp "the-bebot/internal/conversation/app"
 	convcore "the-bebot/internal/conversation/core"
 	memoryconv "the-bebot/internal/memory/adapter/conversation"
 	memorymongo "the-bebot/internal/memory/adapter/mongodb"
 	memoryapp "the-bebot/internal/memory/app"
 	memorycore "the-bebot/internal/memory/core"
+	moodconv "the-bebot/internal/mood/adapter/conversation"
+	moodmongo "the-bebot/internal/mood/adapter/mongodb"
+	moodapp "the-bebot/internal/mood/app"
+	personalityconv "the-bebot/internal/personality/adapter/conversation"
+	personalityapp "the-bebot/internal/personality/app"
+	personalitycore "the-bebot/internal/personality/core"
 	"the-bebot/internal/worker"
 )
 
@@ -417,5 +427,294 @@ func TestMemoryPipelineEndToEndWithMongoDBAndLLM(t *testing.T) {
 	}
 	if reloaded.UsageCount != 1 {
 		t.Errorf("UsageCount = %d, want 1", reloaded.UsageCount)
+	}
+}
+
+func TestFullMVPPipelineEndToEndWithMongoDBAndLLM(t *testing.T) {
+	db := setupPipelineTestMongoDB(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// Repositories & indexes across all 6 MVP MongoDB collections.
+	memoryRepo, err := memorymongo.NewMemoryRepository(db)
+	if err != nil {
+		t.Fatalf("NewMemoryRepository() error = %v", err)
+	}
+	if err := memoryRepo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("memoryRepo.EnsureIndexes() error = %v", err)
+	}
+
+	candidateRepo, err := memorymongo.NewCandidateRepository(db)
+	if err != nil {
+		t.Fatalf("NewCandidateRepository() error = %v", err)
+	}
+	if err := candidateRepo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("candidateRepo.EnsureIndexes() error = %v", err)
+	}
+
+	convRepo, err := convmongo.NewConversationRepository(db)
+	if err != nil {
+		t.Fatalf("NewConversationRepository() error = %v", err)
+	}
+	if err := convRepo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("convRepo.EnsureIndexes() error = %v", err)
+	}
+
+	moodRepo, err := moodmongo.NewCommunityMoodRepository(db)
+	if err != nil {
+		t.Fatalf("NewCommunityMoodRepository() error = %v", err)
+	}
+	if err := moodRepo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("moodRepo.EnsureIndexes() error = %v", err)
+	}
+
+	communityRepo, err := communitymongo.NewCommunityRepository(db)
+	if err != nil {
+		t.Fatalf("NewCommunityRepository() error = %v", err)
+	}
+	if err := communityRepo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("communityRepo.EnsureIndexes() error = %v", err)
+	}
+
+	memberRepo, err := communitymongo.NewMemberRepository(db)
+	if err != nil {
+		t.Fatalf("NewMemberRepository() error = %v", err)
+	}
+	if err := memberRepo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("memberRepo.EnsureIndexes() error = %v", err)
+	}
+
+	// Wire Personality, Mood, Community/Member, Memory, and Conversation together.
+	getPersonalityUC, err := personalityapp.NewGetPersonalityUseCase(personalitycore.Overrides{})
+	if err != nil {
+		t.Fatalf("NewGetPersonalityUseCase() error = %v", err)
+	}
+	personalityProvider := personalityconv.NewPersonalityProviderAdapter(getPersonalityUC)
+
+	moodService, err := moodapp.NewMoodService(moodRepo)
+	if err != nil {
+		t.Fatalf("NewMoodService() error = %v", err)
+	}
+	moodResolver := moodconv.NewMoodResolverAdapter(moodService)
+
+	syncCommunityUC, err := communityapp.NewSyncContextUseCase(communityRepo, memberRepo)
+	if err != nil {
+		t.Fatalf("NewSyncContextUseCase() error = %v", err)
+	}
+	communitySyncer := communityconv.NewCommunityContextAdapter(syncCommunityUC)
+
+	var (
+		llmMu             sync.Mutex
+		chatSystemPrompts []string
+	)
+
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		systemContent := req.Messages[0].Content
+		var reply string
+
+		llmMu.Lock()
+		if strings.Contains(systemContent, "memory extraction engine") {
+			reply = `[{
+				"scope": "member",
+				"type": "preference",
+				"content": "Loves espresso in the morning",
+				"importance": 4,
+				"confidence": 0.92,
+				"tags": ["coffee", "espresso"],
+				"source_message_id": "mvp-msg-1"
+			}]`
+		} else {
+			chatSystemPrompts = append(chatSystemPrompts, systemContent)
+			reply = "Espresso gang! Good choice Ali."
+		}
+		llmMu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"role": "assistant", "content": reply}},
+			},
+		})
+	}))
+	defer llmServer.Close()
+
+	llmClient, err := llm.NewClient(llm.Config{
+		Endpoint: llmServer.URL,
+		APIKey:   "test-key",
+		Model:    "test-model",
+		Timeout:  5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("llm.NewClient() error = %v", err)
+	}
+
+	rules := memoryapp.NewCandidateRules()
+	candidateCreator := memoryconv.NewCandidateCreatorAdapter(
+		memoryapp.NewCreateCandidateUseCase(candidateRepo, rules, 24*time.Hour),
+	)
+	memoryRetriever := memoryconv.NewMemoryRetrieverAdapter(
+		memoryapp.NewRetrieveMemoriesUseCase(memoryRepo),
+	)
+
+	extractor, err := llm.NewMemoryExtractor(llmClient)
+	if err != nil {
+		t.Fatalf("llm.NewMemoryExtractor() error = %v", err)
+	}
+	extractUC := memoryapp.NewExtractMemoriesUseCase(rules, extractor, memoryapp.NewMemoryValidator())
+
+	processor, err := worker.NewMemoryCandidateProcessor(
+		extractUC,
+		memoryRepo,
+		candidateRepo,
+		memorycore.NewCandidateService(),
+	)
+	if err != nil {
+		t.Fatalf("NewMemoryCandidateProcessor() error = %v", err)
+	}
+
+	memWorker, err := worker.NewMemoryWorker(
+		candidateRepo,
+		processor,
+		1,
+		20*time.Millisecond,
+		time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatalf("NewMemoryWorker() error = %v", err)
+	}
+
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	defer workerCancel()
+	if err := memWorker.Start(workerCtx); err != nil {
+		t.Fatalf("memWorker.Start() error = %v", err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		_ = memWorker.Stop(stopCtx)
+	}()
+
+	discordStub := &stubDiscordAdapter{}
+	mentionUC := convapp.NewHandleMentionUseCase(
+		discordStub,
+		convcore.NewConversationService(),
+		llmClient,
+		discordStub,
+		candidateCreator,
+		memoryRetriever,
+		15,
+		24*time.Hour,
+	)
+	_ = mentionUC.SetConversationRepository(convRepo)
+	_ = mentionUC.SetPersonalityProvider(personalityProvider)
+	_ = mentionUC.SetMoodResolver(moodResolver)
+	_ = mentionUC.SetCommunityContextSyncer(communitySyncer)
+	_ = mentionUC.SetMaxRetrievedMemories(5)
+	_ = mentionUC.SetTimeout(10 * time.Second)
+
+	now := time.Now().UTC()
+	firstMention := convcore.MentionEvent{
+		GuildID:         "guild-mvp",
+		GuildName:       "Bebot Club",
+		ChannelID:       "channel-mvp",
+		MessageID:       "mvp-msg-1",
+		UserID:          "user-alice",
+		UserDisplayName: "Alice",
+		UserNickname:    "Ali",
+		Content:         "<@bebot> hello! I like espresso in the morning",
+		MentionedAt:     now,
+	}
+
+	if err := mentionUC.HandleMention(ctx, firstMention); err != nil {
+		t.Fatalf("first HandleMention() error = %v", err)
+	}
+
+	// Wait for background worker to extract & persist memory.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		memories, err := memoryRepo.FindRelevant(ctx, "guild-mvp", "user-alice", 5)
+		if err != nil {
+			t.Fatalf("FindRelevant() error = %v", err)
+		}
+		if len(memories) == 1 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// Second mention exercises ALL subsystems together: Personality + Mood + Community/Member + Persisted ConversationContext + Retrieved Memory.
+	secondMention := convcore.MentionEvent{
+		GuildID:         "guild-mvp",
+		GuildName:       "Bebot Club",
+		ChannelID:       "channel-mvp",
+		MessageID:       "mvp-msg-2",
+		UserID:          "user-alice",
+		UserDisplayName: "Alice",
+		UserNickname:    "Ali",
+		Content:         "<@bebot> what should I drink now?",
+		MentionedAt:     now.Add(time.Minute),
+	}
+
+	if err := mentionUC.HandleMention(ctx, secondMention); err != nil {
+		t.Fatalf("second HandleMention() error = %v", err)
+	}
+
+	llmMu.Lock()
+	if len(chatSystemPrompts) < 2 {
+		llmMu.Unlock()
+		t.Fatalf("expected at least 2 LLM chat calls, got %d", len(chatSystemPrompts))
+	}
+	secondPrompt := chatSystemPrompts[1]
+	llmMu.Unlock()
+
+	for _, expected := range []string{
+		"You are The Bebot, a member of a Discord community.",
+		"Personality traits:",
+		"Current mood state (separate from underlying Personality):",
+		"Effective mood: cheerful (intensity 3/5)",
+		"Community and member context:",
+		"Community name: Bebot Club",
+		"Speaking member: Ali",
+		"Member interaction count with you: 2",
+		"Relevant long-term memories:",
+		"Loves espresso in the morning",
+	} {
+		if !strings.Contains(secondPrompt, expected) {
+			t.Errorf("second mention LLM prompt missing %q:\n%s", expected, secondPrompt)
+		}
+	}
+
+	// Verify durable state in MongoDB across conversation_contexts, community_moods, communities, members.
+	latestConv, err := convRepo.FindLatest(ctx, "guild-mvp", "channel-mvp")
+	if err != nil || latestConv == nil || latestConv.TriggerMessageID != "mvp-msg-2" {
+		t.Fatalf("unexpected persisted conversation snapshot: %+v, err=%v", latestConv, err)
+	}
+
+	savedMood, err := moodRepo.FindByGuildID(ctx, "guild-mvp")
+	if err != nil || savedMood == nil || savedMood.Category != "cheerful" {
+		t.Fatalf("unexpected persisted community mood: %+v, err=%v", savedMood, err)
+	}
+
+	savedComm, err := communityRepo.FindByGuildID(ctx, "guild-mvp")
+	if err != nil || savedComm == nil || savedComm.Name != "Bebot Club" || savedComm.PrimaryLanguage != "" {
+		t.Fatalf("unexpected persisted community metadata: %+v, err=%v", savedComm, err)
+	}
+
+	savedMember, err := memberRepo.FindByGuildAndUser(ctx, "guild-mvp", "user-alice")
+	if err != nil || savedMember == nil || savedMember.InteractionCount != 2 || savedMember.Nickname != "Ali" {
+		t.Fatalf("unexpected persisted member metadata: %+v, err=%v", savedMember, err)
 	}
 }

@@ -2,9 +2,9 @@
 
 The Bebot is a Discord bot project written in Go. The project aims to create a bot that behaves like a playful member of a Discord community rather than a generic assistant.
 
-The bot uses an LLM to generate natural-language responses, while application behavior, business rules, conversation context, memory processing, and other state-related responsibilities are handled by the Go application.
+The bot uses an LLM to generate natural-language responses, while application behavior, business rules, personality, mood state, conversation context, memory processing, and community/member metadata are handled by the Go application.
 
-> **Project status:** The core implementation has progressed through the main development phases. End-to-end testing and final testing/hardening remain. The status below distinguishes implemented components from planned requirements and items that still need verification.
+> **Project status:** All approved MVP components (Discord Gateway, Conversation Context persistence, Global Go Personality, Mood system, Long-term Memory pipeline, and Community/Member metadata) are implemented and verified with automated unit tests, real MongoDB integration tests, and an automated full-MVP pipeline integration test (`httptest` LLM + real MongoDB). Race detection (`go test -race`) is currently blocked in environments without a `gcc` C compiler, and live production Discord Gateway + external LLM E2E verification has not been executed in automated runs.
 
 ---
 
@@ -19,14 +19,16 @@ The bot uses an LLM to generate natural-language responses, while application be
 - [Mood System](#mood-system)
 - [Memory System](#memory-system)
 - [Conversation Context](#conversation-context)
+- [Community and Member Context](#community-and-member-context)
 - [Database and Persistence](#database-and-persistence)
 - [Background Processing](#background-processing)
 - [Memory Types](#memory-types)
+- [Configuration](#configuration)
 - [Development Scope](#development-scope)
 - [Current Implementation Status](#current-implementation-status)
 - [Testing and Verification](#testing-and-verification)
-- [Outstanding Work](#outstanding-work)
-- [Requirements Not Yet Finalized](#requirements-not-yet-finalized)
+- [Known Limitations and Remaining Verification](#known-limitations-and-remaining-verification)
+- [Project Principles](#project-principles)
 
 ---
 
@@ -36,17 +38,17 @@ The Bebot is designed to participate in Discord community conversations.
 
 Its intended behavior is different from a conventional AI assistant:
 
-- It should feel like a member of the community.
-- It should communicate casually and naturally.
-- It should have a recognizable personality.
-- It should be able to retain relevant information from previous interactions.
-- It should use community and member context when generating responses.
-- Its mood should influence how it responds.
-- It should respond when explicitly mentioned.
+- It feels like a member of the community.
+- It communicates casually and naturally.
+- It has a recognizable Go-owned personality.
+- It retains relevant information from previous interactions.
+- It uses community-level and member-level context when generating responses.
+- Its mood influences how it responds.
+- It responds when explicitly mentioned by human community members.
 
 The project separates application responsibilities from language generation.
 
-Go is responsible for application logic, state, memory, context, and business rules. The LLM is responsible for generating natural-language responses using the context provided by the application.
+Go is responsible for application logic, state, personality, mood, memory, context, and business rules. The LLM is responsible for generating natural-language responses using the structured context provided by the application.
 
 ---
 
@@ -57,12 +59,12 @@ The main goals are:
 1. Build a Discord bot using Go.
 2. Use an LLM to generate conversational responses.
 3. Make the bot behave like a playful and recognizable community member.
-4. Provide a Personality system.
-5. Provide a Mood system.
+4. Provide a Go-owned Personality system.
+5. Provide a Mood system (persistent community mood + temporary interaction mood).
 6. Provide long-term Memory.
-7. Support community-level and member-level context.
+7. Support community-level and member-level context without duplicating Memory records.
 8. Process memory candidates asynchronously.
-9. Persist relevant information in MongoDB.
+9. Persist relevant state in MongoDB.
 10. Keep application logic and infrastructure separated through Hexagonal Architecture.
 
 ---
@@ -75,8 +77,8 @@ The main goals are:
 | DiscordGo | Discord Gateway and Discord API integration |
 | MongoDB | Persistent data storage |
 | MongoDB Go Driver | MongoDB integration |
-| LLM | Natural-language response generation |
-| Goroutines | Background worker execution |
+| LLM | Natural-language response generation and memory extraction |
+| Goroutines | Background worker execution and periodic cleanup |
 
 The project uses Hexagonal Architecture to separate application logic from external infrastructure.
 
@@ -88,256 +90,206 @@ The project follows **Hexagonal Architecture**.
 
 The main architectural responsibilities are:
 
-- **Core:** Domain concepts, interfaces, and business rules.
+- **Core:** Domain concepts, ports/interfaces, and business rules.
 - **Application:** Use cases and application workflows.
-- **Adapters:** Implementations that connect the application to external systems.
-- **Infrastructure:** External services and their integrations.
+- **Adapters:** Implementations that connect the application to external systems (MongoDB, Discord, LLM, and cross-domain conversation ports).
+- **Infrastructure:** Configuration, database connection lifecycle, structured logging, and composition root (`cmd/bot/main.go`).
 
-The application should not depend directly on infrastructure implementations. Interfaces define the boundaries between application logic and adapters.
+Application logic depends on core interfaces rather than concrete infrastructure or cross-domain implementations.
 
 ### High-level interaction flow
 
 ```text
-Discord Message
+Discord Message (human authors only; ignores bot authors and DMs)
       |
       v
 Discord Gateway
       |
       v
-Mention Handler
+Mention Handler (enforces CONVERSATION_TIMEOUT)
       |
       v
-Conversation Context
+Conversation Context (live Discord REST fetch + MongoDB 24h fallback/dedup)
       |
-      +--------------------------+
-      |                          |
-      v                          v
-Memory Retrieval            Context Processing
-      |                          |
-      +------------+-------------+
-                   |
-                   v
-             LLM Request
-                   |
-                   v
-             LLM Response
-                   |
-                   v
-          Discord Reply
-                   |
-                   v
-        Memory Candidate Creation
-                   |
-                   v
-             MongoDB Queue
-                   |
-                   v
-           Memory Background Worker
-                   |
-                   v
-          Extract and Validate Memory
-                   |
-                   v
-           Persist Long-term Memory
+      +------------------+------------------+------------------+
+      |                  |                  |                  |
+      v                  v                  v                  v
+Personality        Mood System        Community/Member   Memory Retrieval
+(Go domain)     (MongoDB + 15m TTL)   (MongoDB upsert)  (top N memories)
+      |                  |                  |                  |
+      +------------------+--------+---------+------------------+
+                                  |
+                                  v
+                            LLM Request
+                                  |
+                                  v
+                            LLM Response
+                                  |
+                                  v
+                           Discord Reply
+                                  |
+                  +---------------+---------------+
+                  |                               |
+                  v                               v
+     Persist ConversationContext       Memory Candidate Creation
+       (MongoDB upsert, 24h TTL)         (idempotent, rule-gated)
+                                                  |
+                                                  v
+                                        MongoDB Candidate Queue
+                                                  |
+                                                  v
+                                         Memory Background Worker
+                                        (+ periodic expired cleanup)
+                                                  |
+                                                  v
+                                        Extract & Validate Memory
+                                        (sibling-preserving batch)
+                                                  |
+                                                  v
+                                         Persist Long-term Memory
 ```
-
-The flow describes the intended application workflow. Individual components may have different implementation and verification status, as described in the implementation section.
 
 ---
 
 ## Discord Interaction
 
-The bot integrates with Discord through DiscordGo.
+The bot integrates with Discord through DiscordGo (`internal/discord/adapter/gateway/`).
 
-Expected interaction behavior:
+Implemented interaction behavior:
 
-- Connect to the Discord Gateway.
-- Receive Discord messages.
-- Respond when the bot is explicitly mentioned.
-- Retrieve recent channel messages to provide conversation context.
-- Generate a response using the LLM.
-- Send the response back to Discord.
-
-The bot is intended to respond to mentions rather than act as an automatic responder to every message.
+- Connect to the Discord Gateway with graceful shutdown waiting for in-flight mention handlers.
+- Ignore Direct Messages (MVP scope is guild channels only).
+- Ignore messages authored by any bot (`message.Author.Bot == true`) as well as The Bebot itself to prevent bot-to-bot response loops.
+- Detect explicit bot mentions and extract real Discord identity metadata (`GuildName` from session state, `GlobalName`/`Username`, and `Member.Nick`).
+- Retrieve recent channel messages via Discord REST API (handling empty `guild_id` on REST message payloads while still rejecting mismatched non-empty guild IDs or mismatched channel IDs).
+- Generate a response using the LLM and send the reply back to Discord.
 
 ---
 
 ## Personality
 
-Personality defines the bot's recognizable behavior and communication style.
+Personality defines the bot's underlying behavioral identity and is owned by Go in `internal/personality/` (separate from Mood and decoupled from the LLM adapter).
 
-The intended personality direction is:
+Implemented Personality model (`internal/personality/core`):
+
+- `Name`
+- `Traits`
+- `SpeakingStyle`
+- `TeasingRules`
+- `Boundaries`
+- `LanguagePolicy`
+
+The default Bebot profile encodes the established direction:
 
 - Casual and informal.
 - Playful and witty.
 - Lively and entertaining.
 - Mischievous.
-- Able to tease lightly.
 - Has its own opinions.
+- Light-hearted teasing only; never humiliates, insults, or intentionally hurts community members.
 - Communicates naturally using the community's language.
 - Avoids sounding like a formal AI assistant.
 
-Teasing must remain light-hearted. The bot should not humiliate, insult, or intentionally hurt community members.
-
-Personality and Mood are separate concepts:
-
-- **Personality** represents the bot's underlying behavioral identity.
-- **Mood** represents its current emotional state and can influence the tone of an individual response.
-
-The current implementation contains a static `defaultSystemPrompt` in the LLM adapter. A separate configurable Personality domain/system has not been established as complete.
+Personality is global across communities for MVP, with optional configuration overrides (`PERSONALITY_NAME`, `PERSONALITY_EXTRA_TRAITS`, `PERSONALITY_LANGUAGE_POLICY`). The LLM adapter renders Go-supplied `PersonalityContext` into the system prompt and retains `defaultSystemPrompt` only as a fallback when no Personality context is provided.
 
 ---
 
 ## Mood System
 
-Mood is intended to influence the bot's conversational behavior.
+Mood (`internal/mood/`) is separate from Personality and influences tone and energy without violating Personality boundaries.
 
-Mood is separate from Personality.
+### Categories and intensity
 
-The requirements established for Mood include:
+- **Categories (6 fixed):** `cheerful`, `playful`, `neutral`, `sarcastic`, `annoyed`, `tired`.
+- **Intensity scale:** integer `1` (mild) to `5` (very strong).
+- **Default community mood:** `playful`, intensity `2`.
 
-- Persistent mood at the community level.
-- Temporary mood influenced by interactions.
-- Community mood should survive application restarts.
-- Mood should be included in the context provided to the LLM.
-- Mood should influence the bot's response behavior.
+### Persistent community mood and decay
 
-The intended distinction is:
+- Persisted per `guild_id` in MongoDB collection `community_moods` (unique index on `guild_id`), surviving application restarts.
+- **Deterministic decay:** reduces intensity by `1` for every `6` hours of inactivity since `updated_at`; when intensity falls below `1`, resets to default `playful` (`2`). Decay is computed deterministically from elapsed time without requiring a background timer.
+- Per-guild locking serializes load → decay → transition → persist for concurrent mentions.
 
-| Concept | Responsibility |
-|---|---|
-| Personality | Defines the bot's underlying identity and behavior |
-| Community Mood | Represents the community's persistent mood |
-| Temporary Interaction Mood | Represents temporary mood changes caused by interactions |
+### Temporary interaction mood
 
-The exact mood categories, transition formulas, intensity levels, decay rules, and persistence schema have not yet been finalized.
+- Maintained in memory only (not persisted in MongoDB), scoped by `(guild_id, channel_id)` with a `15`-minute TTL and `sync.RWMutex` concurrency safety.
+- Combined with persistent Community Mood into an `EffectiveMood` supplied to the LLM in its own prompt section, distinct from Personality.
 
-A complete Mood system is not currently confirmed as implemented.
+### Deterministic interaction signals
+
+Mood transitions are computed deterministically in Go (never mutated by the LLM) from clear Thai/English interaction cues across 5 categories: greetings/compliments, playful teasing/jokes, sarcasm, hostile/rude cues, and explicit tiredness. Neutral or ambiguous messages cause no mood mutation, and rapid-fire mentions alone are not treated as annoyed behavior.
 
 ---
 
 ## Memory System
 
-Memory allows the bot to retain relevant information from conversations and use it in future interactions.
+Memory (`internal/memory/`) retains useful long-term information and supplies it as untrusted reference data in future interactions.
 
-The intended memory workflow is:
+Implemented workflow:
 
-1. Receive a Discord mention.
-2. Build conversation context.
-3. Identify whether the conversation contains information worth remembering.
-4. Create a memory candidate when the conversation satisfies the candidate rules.
-5. Store the candidate in MongoDB.
-6. Process candidates asynchronously.
-7. Extract and validate memory information.
-8. Save accepted memories.
-9. Retrieve relevant memories during future conversations.
-10. Include retrieved memories in the LLM context.
-
-Not every conversation should become a memory. Candidate creation is subject to rules and conditions.
-
-### Memory Candidate
-
-A Memory Candidate is information identified as potentially useful for long-term memory.
-
-Candidate creation and memory extraction are separate responsibilities:
-
-- Candidate creation identifies conversations that may contain useful information.
-- Candidate processing extracts structured memory information.
-- Validation determines whether extracted information should be stored.
-- Memory persistence stores accepted information.
-
-The candidate workflow uses MongoDB as persistent storage.
-
-### Memory Retrieval
-
-When generating a response, the application retrieves relevant memories and includes them in the conversation context.
-
-The current implementation retrieves up to five memories for context.
-
-Memory usage is updated when retrieved memories are used.
+1. Receive a Discord mention and build conversation context.
+2. Retrieve up to `MEMORY_MAX_RETRIEVED_MEMORIES` (default `5`) relevant memories (`community` scope + speaking `member` scope) via the `MemoryRetriever` port, updating usage tracking (`usage_count`, `last_used_at`).
+3. Include retrieved memories as JSON reference data with prompt-injection defense guidelines in the LLM system prompt.
+4. After replying, evaluate `CandidateRules` (Thai/English preference, fact, and promise signals, minimum 12 runes, ignoring bot messages).
+5. Create a `MemoryCandidate` in MongoDB (`memory_candidates`), treating duplicate `(guild_id, message_id)` creation idempotently on redelivered events.
+6. Background `MemoryWorker` goroutines atomically claim pending, retry-ready, or lease-expired candidates via `ClaimNext`.
+7. `MemoryCandidateProcessor` extracts structured memories via `llm.MemoryExtractor` (prompt schema includes `source_message_id`), validates each item with `MemoryValidator` (authoritative source user ID, non-bot source check, sensitive-pattern filtering), preserves valid sibling memories if another item in the batch is invalid, saves via idempotent SHA-256 upsert to `memories`, and updates candidate status with ownership/lock verification (`UpdateProcessingResult`).
+8. A dedicated cleanup goroutine in `MemoryWorker` periodically invokes `CandidateRepository.DeleteExpired` without blocking candidate processing.
 
 ---
 
 ## Conversation Context
 
-Conversation Context provides recent messages to the LLM so that responses can take the surrounding conversation into account.
+Conversation Context (`internal/conversation/`) provides chronological recent messages to the LLM:
 
-The established requirements include:
+- Live Discord `FetchRecentMessages` is the primary source of recent channel messages.
+- The trigger message is guaranteed to be included and sorted chronologically, bounded by `MAX_CONTEXT_MESSAGES` (default `15`) with a 24-hour TTL.
+- The latest `ConversationContext` snapshot per `(guild_id, channel_id)` is upserted into MongoDB (`conversation_contexts`, unique `(guild_id, channel_id)` index and 24-hour TTL index on `expires_at`).
+- When live Discord messages return fewer than `maxMessages`, non-duplicate messages from the latest non-expired snapshot supplement context (live messages take precedence). If live Discord fetch fails transiently, a non-expired persisted snapshot serves as fallback.
+- `HandleMentionUseCase` enforces `CONVERSATION_TIMEOUT` per mention.
 
-- Retrieve recent Discord channel messages.
-- Use recent messages as conversational context.
-- Limit the number of messages through `maxMessages`.
-- Use a 24-hour TTL for conversation context.
+---
 
-Recent Discord messages are retrieved for context. Durable storage of complete conversation history has not been established as an implemented feature.
+## Community and Member Context
 
-A `ConversationRepository` port was defined with responsibilities for:
+Lightweight identity metadata (`internal/community/`) is persisted separately from long-term `Memory`:
 
-- Saving conversation context.
-- Finding the latest conversation context.
-- Deleting expired conversation context.
+- **Communities (`communities`):** `guild_id` (unique), `name` (real Discord guild name when available), `primary_language` (never guessed from a single message; remains unset unless explicitly stored), `active_since`, `updated_at`.
+- **Members (`members`):** `(guild_id, user_id)` (unique), `display_name` (Discord `GlobalName` / `Username`), `nickname` (Discord guild `Nick`), `interaction_count` (atomically incremented per mention), `last_seen_at`.
 
-A MongoDB implementation and complete application wiring for this repository are not confirmed as complete.
+Long-term facts, preferences, events, jokes, promises, catchphrases, and interaction patterns remain exclusively in `memories` (`community` and `member` scopes).
 
 ---
 
 ## Database and Persistence
 
-MongoDB is used for persistent storage.
+MongoDB collections and indexes ensured at startup:
 
-The memory implementation includes the following collections:
-
-| Collection | Responsibility |
-|---|---|
-| `memory_candidates` | Stores memory candidates awaiting processing or in processing states |
-| `memories` | Stores accepted long-term memories |
-
-Memory persistence includes repository operations and candidate-processing support.
-
-### Intended persistence areas
-
-The broader project requirements also include persistent community and member information, mood state, and conversation context.
-
-The following areas have been identified as intended persistence responsibilities:
-
-| Data | Intended responsibility | Status |
-|---|---|---|
-| Memories | Long-term memory storage | Implemented |
-| Memory Candidates | Candidate queue and processing state | Implemented |
-| Communities | Community-level information | Not confirmed complete |
-| Members | Member-level information | Not confirmed complete |
-| Mood | Persistent community mood | Not confirmed complete |
-| Conversation Context | Recent conversation persistence and expiration | Not confirmed complete |
-
-Collection names and schemas for the remaining persistence areas have not been finalized in the available requirements.
+| Collection | Responsibility | Key Indexes | Status |
+|---|---|---|---|
+| `memories` | Long-term memories (`community` & `member` scopes) | `idx_memories_community_relevance`, `idx_memories_member_relevance`, unique partial `idx_memories_idempotency` | Implemented & Verified (MongoDB tests) |
+| `memory_candidates` | Durable candidate queue and processing leases | unique `(guild_id, message_id)`, pending/retry index, processing lock index, expiration index | Implemented & Verified (MongoDB tests) |
+| `conversation_contexts` | Latest conversation context snapshot per `(guild_id, channel_id)` | unique `(guild_id, channel_id)`, TTL index on `expires_at` (`expireAfterSeconds: 0`) | Implemented & Verified (MongoDB tests) |
+| `community_moods` | Persistent guild-level mood state | unique `guild_id` | Implemented & Verified (MongoDB tests) |
+| `communities` | Lightweight community identity metadata | unique `guild_id` | Implemented & Verified (MongoDB tests) |
+| `members` | Lightweight member identity & interaction count metadata | unique `(guild_id, user_id)` | Implemented & Verified (MongoDB tests) |
 
 ---
 
 ## Background Processing
 
-Memory candidate processing is performed asynchronously using Go goroutines.
+Memory candidate processing runs asynchronously via `MemoryWorker` goroutines (`internal/worker/`):
 
-MongoDB acts as the durable storage and queue for memory candidates.
+- Uses MongoDB (`memory_candidates`) as the durable candidate store and atomic lease queue (`ClaimNext`).
+- Exponential backoff retries up to 5 attempts with lock-ownership verification (`UpdateProcessingResult`).
+- Periodic non-blocking cleanup goroutine calling `DeleteExpired`.
+- Graceful shutdown via context cancellation and `Stop(ctx)`.
 
-The intended processing responsibilities are:
-
-1. Claim an available candidate.
-2. Process the candidate.
-3. Extract memory information using the LLM.
-4. Validate the extracted information.
-5. Save accepted memory.
-6. Update candidate processing status.
-7. Handle processing errors and retry where applicable.
-
-The worker implementation includes lifecycle management and candidate-processing components.
-
-The project does not require Redis, Kafka, Kubernetes, or a Vector Database as part of the established MVP scope.
+The MVP intentionally excludes Redis, Kafka, Kubernetes, and Vector Databases.
 
 ---
 
 ## Memory Types
-
-The memory types identified in the project requirements are:
 
 | Memory Type | Description |
 |---|---|
@@ -349,7 +301,21 @@ The memory types identified in the project requirements are:
 | `catchphrase` | Common phrases or expressions |
 | `interaction_pattern` | Patterns observed from interactions |
 
-These types describe the intended categories of information that the bot may remember.
+---
+
+## Configuration
+
+Configuration is loaded via `internal/platform/config` from environment variables (and `.env` if present), validated on startup (`.env.example` lists all supported keys):
+
+- **Discord:** `DISCORD_BOT_TOKEN`
+- **MongoDB:** `MONGODB_URI`, `MONGODB_DATABASE`
+- **LLM:** `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
+- **Conversation:** `CONVERSATION_TIMEOUT` (default `30s`, must be `> 0`), `MAX_CONTEXT_MESSAGES` (default `15`, must be `> 0`)
+- **Memory:** `MEMORY_ENABLED` (default `true`), `MEMORY_MAX_RETRIEVED_MEMORIES` (default `5`, must be `> 0`), `MEMORY_WORKER_COUNT` (default `2`, must be `> 0`)
+- **Personality (optional overrides):** `PERSONALITY_NAME`, `PERSONALITY_EXTRA_TRAITS` (comma-separated), `PERSONALITY_LANGUAGE_POLICY`
+- **App / Logging:** `APP_NAME`, `APP_ENV`, `LOG_LEVEL`
+
+Unused legacy keys `MEMORY_MAX_CANDIDATES` and `MEMORY_QUEUE_SIZE` were removed in favor of `MEMORY_MAX_RETRIEVED_MEMORIES` and MongoDB-backed polling.
 
 ---
 
@@ -357,172 +323,77 @@ These types describe the intended categories of information that the bot may rem
 
 ### MVP scope
 
-The established MVP includes:
-
-- Discord Gateway integration.
-- Mention-based interaction.
-- LLM response generation.
-- Conversation context.
-- Personality.
-- Mood.
-- Long-term Memory.
-- Community-level and member-level context.
-- MongoDB persistence.
-- Asynchronous memory candidate processing.
-- Integration of relevant context into LLM requests.
+- Discord Gateway integration and mention-based interaction (ignoring bots and DMs).
+- LLM response generation and memory extraction.
+- Conversation context with live Discord fetch and 24-hour MongoDB snapshot persistence.
+- Global Go-owned Personality system.
+- Persistent Community Mood + in-memory Temporary Interaction Mood.
+- Long-term Memory candidate creation, background processing, validation, persistence, and retrieval.
+- Lightweight Community and Member metadata context.
+- MongoDB persistence across all required collections.
 
 ### Explicit exclusions
 
-The MVP does not include:
-
-- Redis.
-- Kafka.
-- Kubernetes.
-- Vector Database.
-
-DM support and complete Discord message-history persistence are not established as MVP requirements.
+- Redis, Kafka, Kubernetes, Vector Database.
+- Direct Message (DM) conversations.
+- Unlimited/complete Discord message-history archival.
+- Per-community Personality persistence or social-graph/relationship analytics.
 
 ---
 
 ## Current Implementation Status
 
-The following table separates implementation that exists from requirements that are not yet confirmed complete.
-
-| Component | Current status |
-|---|---|
-| Discord Gateway | Implemented |
-| Mention handling | Implemented |
-| LLM integration | Implemented |
-| Recent message context retrieval | Implemented |
-| Static system prompt | Implemented |
-| Separate Personality system | Not confirmed complete |
-| Mood system | Not confirmed complete |
-| MongoDB connection | Implemented |
-| Memory Candidate creation | Implemented |
-| Memory Candidate repository | Implemented |
-| Memory background processing | Implemented |
-| Memory validation and persistence | Implemented |
-| Memory retrieval | Implemented |
-| Community persistence | Not confirmed complete |
-| Member persistence | Not confirmed complete |
-| Conversation persistence | Not confirmed complete |
-| End-to-end Memory workflow verification | Remaining verification |
-| Final testing and hardening | Remaining work |
-
-The implementation status should not be interpreted as proof that every component has passed production-level verification.
+| Component | Status | Verification Evidence |
+|---|---|---|
+| Discord Gateway & Mention handling (incl. bot-author filter & REST guild handling) | **Implemented** | Unit tests pass (`gateway` package); live Discord Gateway unverified in automated run |
+| Conversation Context (live fetch + 24h MongoDB snapshot upsert/fallback) | **Implemented** | Unit tests + real MongoDB integration tests pass |
+| Global Go-owned Personality system | **Implemented** | Unit tests + LLM prompt tests + full-MVP E2E test pass |
+| Mood system (persistent `community_moods`, 6h decay, 15m in-memory temporary mood) | **Implemented** | Unit tests + concurrency test + real MongoDB restart test + full-MVP E2E test pass |
+| Memory pipeline (rules, idempotent candidates, worker, cleanup, sibling-preserving extraction, validation, persistence, retrieval) | **Implemented** | Unit tests + real MongoDB repository tests + automated MongoDB+`httptest` E2E tests pass |
+| Community & Member lightweight metadata (`communities`, `members`) | **Implemented** | Unit tests + real MongoDB integration tests + full-MVP E2E test pass |
+| Configuration loading & validation | **Implemented** | Unit tests pass (`internal/platform/config`) |
+| Automated Full-MVP Pipeline Verification (MongoDB + `httptest` LLM) | **Implemented & Verified** | `TestMemoryPipelineEndToEndWithMongoDBAndLLM` and `TestFullMVPPipelineEndToEndWithMongoDBAndLLM` pass against real MongoDB |
+| Race detector verification (`go test -race ./...`) | **Blocked** | Requires `gcc` C compiler in `%PATH%` for CGO on Windows |
+| Live Production Discord + External LLM E2E Verification | **Unverified** | Not executed against live Discord/external LLM APIs in automated test run |
 
 ---
 
 ## Testing and Verification
 
-The following commands have been reported as passing during development:
+Verified commands:
 
 ```bash
-go test ./... -count=1
-```
-
-```bash
+go test -v ./... -count=1
 go vet ./...
-```
-
-```bash
 gofmt -l .
+go build ./cmd/bot
 ```
 
-A project-wide race test was also reported as passing:
+Race detector command (requires a C compiler such as MinGW-w64 `gcc` on `%PATH%`):
 
 ```bash
 go test -race ./... -count=1
 ```
 
-Passing automated tests does not establish that the complete bot has been verified in a real production Discord server and MongoDB environment.
-
-### End-to-end verification
-
-The remaining end-to-end workflow to verify is:
-
-```text
-Discord Mention
-      |
-      v
-Conversation
-      |
-      v
-LLM Response
-      |
-      v
-Memory Candidate
-      |
-      v
-Background Worker
-      |
-      v
-MongoDB Persistence
-      |
-      v
-Memory Retrieval
-      |
-      v
-LLM Context
-```
-
-The complete flow must be verified to confirm that a candidate can be created, processed, stored, retrieved, and used in a subsequent response.
+MongoDB integration tests connect to `MONGODB_TEST_URI` (defaulting to `mongodb://127.0.0.1:27017`), create isolated temporary databases per test, and drop them automatically during test cleanup.
 
 ---
 
-## Outstanding Work
+## Known Limitations and Remaining Verification
 
-The remaining work identified for the MVP is:
-
-1. Complete end-to-end verification of the Memory workflow.
-2. Verify the integration between Discord, Conversation, LLM, Candidate creation, Worker, MongoDB, and Memory retrieval.
-3. Complete the remaining final testing.
-4. Perform final hardening.
-5. Verify that the implemented behavior matches the established Personality, Mood, Memory, and community-context requirements.
-
-Items whose implementation is not confirmed complete must be reviewed against the actual source code before being marked as finished.
-
----
-
-## Requirements Not Yet Finalized
-
-The following details have not been fully specified in the available project requirements:
-
-### Personality
-
-- Exact Personality configuration schema.
-- Whether Personality is global or configurable per community.
-- How Personality configuration is stored and managed.
-
-### Mood
-
-- Exact mood categories.
-- Mood intensity representation.
-- Mood transition rules and formulas.
-- Mood decay rules.
-- Exact temporary interaction mood behavior.
-- Final persistence schema.
-
-### Persistence
-
-- Final schemas and collection names for Communities.
-- Final schemas and collection names for Members.
-- Final schema and collection name for Mood.
-- Final MongoDB implementation for Conversation Context.
-
-These details should not be treated as implemented requirements or filled in without an explicit project decision.
+1. **Race detector (`BLOCKED`):** `go test -race ./... -count=1` requires `gcc` (CGO) in `%PATH%`, which is not installed in the current Windows environment. Run `go test -race ./... -count=1` once MinGW-w64 / GCC is available.
+2. **Live external E2E (`UNVERIFIED`):** End-to-end tests verify all real Go components and all 6 real MongoDB collections using `httptest` for OpenAI-compatible LLM endpoints. Live verification with a real Discord guild and external LLM provider should be performed manually with valid credentials in `.env`.
+3. **LLM response length:** Discord enforces a 2000-character message limit; very long LLM replies are not currently chunked in `DiscordClient.Send`.
+4. **Memory usage sorting nuance:** `MemoryRepository.UpdateUsage` updates `updated_at`, which can favor previously-retrieved memories over newer equal-importance memories.
 
 ---
 
 ## Project Principles
 
-The following principles guide the project:
-
-- Go owns application behavior, state, business rules, and memory management.
-- The LLM generates language rather than owning the application's business logic.
+- Go owns application behavior, state, personality, mood, business rules, and memory management.
+- The LLM generates language rather than owning application business logic.
 - Personality and Mood are separate concepts.
-- Memory should be processed asynchronously.
-- MongoDB provides persistent storage for long-term memory and memory candidates.
-- Application logic should remain separated from infrastructure through Hexagonal Architecture.
-- The bot should behave like a playful community member, not a generic assistant.
-- Features outside the agreed MVP scope should not be added without an explicit decision.
+- Memory is processed asynchronously via MongoDB-backed background workers.
+- Application logic remains separated from infrastructure through Hexagonal Architecture.
+- The bot behaves like a playful community member, not a generic assistant.
+- Features outside the agreed MVP scope are not added without an explicit decision.
