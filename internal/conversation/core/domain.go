@@ -148,12 +148,22 @@ type MemoryContext struct {
 	Importance int
 }
 
+type PersonalityContext struct {
+	Name           string
+	Traits         []string
+	SpeakingStyle  []string
+	TeasingRules   []string
+	Boundaries     []string
+	LanguagePolicy string
+}
+
 type ConversationContext struct {
 	GuildID          string
 	ChannelID        string
 	TriggerMessageID string
 	Messages         []Message
 	Memories         []MemoryContext
+	Personality      *PersonalityContext
 	CreatedAt        time.Time
 	ExpiresAt        time.Time
 }

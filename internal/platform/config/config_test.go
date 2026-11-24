@@ -83,6 +83,9 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	t.Setenv("MEMORY_ENABLED", "false")
 	t.Setenv("MEMORY_MAX_RETRIEVED_MEMORIES", "8")
 	t.Setenv("MEMORY_WORKER_COUNT", "4")
+	t.Setenv("PERSONALITY_NAME", "Custom Bebot")
+	t.Setenv("PERSONALITY_EXTRA_TRAITS", "curious, sharp , ")
+	t.Setenv("PERSONALITY_LANGUAGE_POLICY", "Speak Thai naturally")
 	t.Setenv("LOG_LEVEL", "info")
 
 	cfg, err := LoadFromEnv()
@@ -112,6 +115,20 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 
 	if cfg.Memory.WorkerCount != 4 {
 		t.Errorf("WorkerCount = %d, want 4", cfg.Memory.WorkerCount)
+	}
+
+	if cfg.Personality.Name != "Custom Bebot" {
+		t.Errorf("Personality.Name = %q, want Custom Bebot", cfg.Personality.Name)
+	}
+
+	if len(cfg.Personality.ExtraTraits) != 2 ||
+		cfg.Personality.ExtraTraits[0] != "curious" ||
+		cfg.Personality.ExtraTraits[1] != "sharp" {
+		t.Errorf("Personality.ExtraTraits = %v", cfg.Personality.ExtraTraits)
+	}
+
+	if cfg.Personality.LanguagePolicy != "Speak Thai naturally" {
+		t.Errorf("Personality.LanguagePolicy = %q", cfg.Personality.LanguagePolicy)
 	}
 }
 

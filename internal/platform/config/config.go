@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -19,8 +20,15 @@ type Config struct {
 
 	Conversation ConversationConfig
 	Memory       MemoryConfig
+	Personality  PersonalityConfig
 
 	LogLevel string
+}
+
+type PersonalityConfig struct {
+	Name           string
+	ExtraTraits    []string
+	LanguagePolicy string
 }
 
 type DiscordConfig struct {
@@ -90,6 +98,12 @@ func LoadFromEnv() (*Config, error) {
 			Enabled:              true,
 			MaxRetrievedMemories: 5,
 			WorkerCount:          2,
+		},
+
+		Personality: PersonalityConfig{
+			Name:           strings.TrimSpace(getEnv("PERSONALITY_NAME", "")),
+			ExtraTraits:    getCSV("PERSONALITY_EXTRA_TRAITS"),
+			LanguagePolicy: strings.TrimSpace(getEnv("PERSONALITY_LANGUAGE_POLICY", "")),
 		},
 
 		LogLevel: getEnv("LOG_LEVEL", "debug"),
@@ -163,6 +177,24 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getCSV(key string) []string {
+	raw := strings.TrimSpace(getEnv(key, ""))
+	if raw == "" {
+		return nil
+	}
+
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+
+	return result
 }
 
 func getInt(key string, fallback int) (int, error) {

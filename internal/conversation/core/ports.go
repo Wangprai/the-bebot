@@ -68,3 +68,10 @@ type MemoryRetriever interface {
 		limit int,
 	) ([]MemoryContext, error)
 }
+
+// PersonalityProvider supplies The Bebot's underlying behavioral personality.
+type PersonalityProvider interface {
+	GetPersonality(
+		ctx context.Context,
+	) (PersonalityContext, error)
+}

@@ -23,6 +23,9 @@ import (
 	memorymongodb "the-bebot/internal/memory/adapter/mongodb"
 	memoryapp "the-bebot/internal/memory/app"
 	memorycore "the-bebot/internal/memory/core"
+	personalityadapter "the-bebot/internal/personality/adapter/conversation"
+	personalityapp "the-bebot/internal/personality/app"
+	personalitycore "the-bebot/internal/personality/core"
 )
 
 const (
@@ -291,6 +294,22 @@ func run() error {
 
 	appLogger.Info("Conversation indexes ensured")
 
+	// Initialize Personality System (Global Go-owned profile)
+	getPersonalityUseCase, err := personalityapp.NewGetPersonalityUseCase(
+		personalitycore.Overrides{
+			Name:           cfg.Personality.Name,
+			ExtraTraits:    cfg.Personality.ExtraTraits,
+			LanguagePolicy: cfg.Personality.LanguagePolicy,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("initialize personality: %w", err)
+	}
+
+	personalityProvider := personalityadapter.NewPersonalityProviderAdapter(
+		getPersonalityUseCase,
+	)
+
 	// Initialize Conversation Service
 	conversationService := core.NewConversationService()
 
@@ -310,6 +329,12 @@ func run() error {
 		conversationRepository,
 	); err != nil {
 		return fmt.Errorf("configure conversation repository: %w", err)
+	}
+
+	if err := mentionHandler.SetPersonalityProvider(
+		personalityProvider,
+	); err != nil {
+		return fmt.Errorf("configure personality provider: %w", err)
 	}
 
 	if err := mentionHandler.SetMaxRetrievedMemories(

@@ -434,3 +434,79 @@ func TestGenerateSkipsEmptyMemoryContent(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 }
+
+func TestGenerateUsesGoOwnedPersonalityInSystemPrompt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			var request chatRequest
+
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+
+			systemPrompt := request.Messages[0].Content
+
+			for _, expected := range []string{
+				"You are The Bebot, a member of a Discord community.",
+				"Personality traits:",
+				"playful and witty",
+				"Speaking style:",
+				"Talk like a lively friend",
+				"Teasing rules:",
+				"Light-hearted teasing",
+				"Boundaries:",
+				"Never humiliate",
+				"Language policy:",
+				"Communicate naturally in the language used by the community.",
+				"Relevant long-term memories:",
+				"Likes Go",
+			} {
+				if !strings.Contains(systemPrompt, expected) {
+					t.Errorf("system prompt missing %q:\n%s", expected, systemPrompt)
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"choices": [
+					{
+						"message": {
+							"content": "Yo, Go is neat!"
+						}
+					}
+				]
+			}`))
+		},
+	))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL)
+
+	_, err := client.Generate(
+		context.Background(),
+		core.ConversationContext{
+			Messages: []core.Message{
+				{Content: "Hey Bebot"},
+			},
+			Personality: &core.PersonalityContext{
+				Name:           "The Bebot",
+				Traits:         []string{"playful and witty"},
+				SpeakingStyle:  []string{"Talk like a lively friend"},
+				TeasingRules:   []string{"Light-hearted teasing"},
+				Boundaries:     []string{"Never humiliate"},
+				LanguagePolicy: "Communicate naturally in the language used by the community.",
+			},
+			Memories: []core.MemoryContext{
+				{
+					Scope:      "member",
+					Type:       "preference",
+					Content:    "Likes Go",
+					Importance: 4,
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+}

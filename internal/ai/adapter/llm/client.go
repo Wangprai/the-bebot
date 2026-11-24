@@ -106,8 +106,15 @@ func (c *Client) Generate(
 		return "", err
 	}
 
+	baseSystemPrompt := c.systemPrompt
+	if conversationContext.Personality != nil {
+		if rendered := buildPersonalitySystemPrompt(*conversationContext.Personality); rendered != "" {
+			baseSystemPrompt = rendered
+		}
+	}
+
 	systemPrompt, err := buildMemorySystemPrompt(
-		c.systemPrompt,
+		baseSystemPrompt,
 		conversationContext.Memories,
 	)
 	if err != nil {
@@ -123,6 +130,62 @@ func (c *Client) Generate(
 	}
 
 	return c.complete(ctx, messages)
+}
+
+func buildPersonalitySystemPrompt(
+	personality core.PersonalityContext,
+) string {
+	name := strings.TrimSpace(personality.Name)
+	if name == "" {
+		return ""
+	}
+
+	var prompt strings.Builder
+
+	fmt.Fprintf(&prompt, "You are %s, a member of a Discord community.", name)
+
+	if len(personality.Traits) > 0 {
+		prompt.WriteString("\n\nPersonality traits:\n")
+		for _, trait := range personality.Traits {
+			if trimmed := strings.TrimSpace(trait); trimmed != "" {
+				fmt.Fprintf(&prompt, "- %s\n", trimmed)
+			}
+		}
+	}
+
+	if len(personality.SpeakingStyle) > 0 {
+		prompt.WriteString("\nSpeaking style:\n")
+		for _, style := range personality.SpeakingStyle {
+			if trimmed := strings.TrimSpace(style); trimmed != "" {
+				fmt.Fprintf(&prompt, "- %s\n", trimmed)
+			}
+		}
+	}
+
+	if len(personality.TeasingRules) > 0 {
+		prompt.WriteString("\nTeasing rules:\n")
+		for _, rule := range personality.TeasingRules {
+			if trimmed := strings.TrimSpace(rule); trimmed != "" {
+				fmt.Fprintf(&prompt, "- %s\n", trimmed)
+			}
+		}
+	}
+
+	if len(personality.Boundaries) > 0 {
+		prompt.WriteString("\nBoundaries:\n")
+		for _, boundary := range personality.Boundaries {
+			if trimmed := strings.TrimSpace(boundary); trimmed != "" {
+				fmt.Fprintf(&prompt, "- %s\n", trimmed)
+			}
+		}
+	}
+
+	if policy := strings.TrimSpace(personality.LanguagePolicy); policy != "" {
+		prompt.WriteString("\nLanguage policy:\n- ")
+		prompt.WriteString(policy)
+	}
+
+	return strings.TrimSpace(prompt.String())
 }
 
 func buildMemorySystemPrompt(

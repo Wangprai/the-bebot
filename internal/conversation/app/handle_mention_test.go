@@ -778,3 +778,72 @@ func TestHandleMentionSaveConversationContextError(t *testing.T) {
 		t.Fatalf("expected save error %v, got %v", expectedErr, err)
 	}
 }
+
+type mockPersonalityProvider struct {
+	personality core.PersonalityContext
+	err         error
+	called      bool
+}
+
+func (m *mockPersonalityProvider) GetPersonality(
+	ctx context.Context,
+) (core.PersonalityContext, error) {
+	m.called = true
+	return m.personality, m.err
+}
+
+func TestHandleMentionInjectsPersonalityContext(t *testing.T) {
+	useCase, _, _, generator, sender, event := newTestUseCase()
+
+	provider := &mockPersonalityProvider{
+		personality: core.PersonalityContext{
+			Name:           "The Bebot",
+			Traits:         []string{"playful and witty"},
+			SpeakingStyle:  []string{"casual banter"},
+			TeasingRules:   []string{"light teasing only"},
+			Boundaries:     []string{"never hurt members"},
+			LanguagePolicy: "match community language",
+		},
+	}
+
+	if err := useCase.SetPersonalityProvider(nil); err == nil {
+		t.Fatal("expected error for nil personality provider")
+	}
+
+	if err := useCase.SetPersonalityProvider(provider); err != nil {
+		t.Fatalf("SetPersonalityProvider() error = %v", err)
+	}
+
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("HandleMention() error = %v", err)
+	}
+
+	if !provider.called {
+		t.Fatal("expected PersonalityProvider to be called")
+	}
+
+	if generator.receivedContext.Personality == nil ||
+		generator.receivedContext.Personality.Name != "The Bebot" {
+		t.Fatalf("expected Personality in LLM context, got %+v", generator.receivedContext.Personality)
+	}
+
+	if !sender.called {
+		t.Error("expected MessageSender to be called")
+	}
+}
+
+func TestHandleMentionPersonalityErrorStopsPipeline(t *testing.T) {
+	useCase, _, _, generator, sender, event := newTestUseCase()
+
+	expectedErr := errors.New("personality failed")
+	_ = useCase.SetPersonalityProvider(&mockPersonalityProvider{err: expectedErr})
+
+	err := useCase.HandleMention(context.Background(), event)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected error %v, got %v", expectedErr, err)
+	}
+
+	if generator.called || sender.called {
+		t.Error("downstream dependencies should not be called on personality error")
+	}
+}

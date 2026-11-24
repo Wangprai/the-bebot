@@ -23,6 +23,7 @@ type HandleMentionUseCase struct {
 	candidateCreator       core.CandidateCreator
 	memoryRetriever        core.MemoryRetriever
 	conversationRepository core.ConversationRepository
+	personalityProvider    core.PersonalityProvider
 
 	maxMessages          int
 	maxRetrievedMemories int
@@ -94,6 +95,21 @@ func (uc *HandleMentionUseCase) SetConversationRepository(
 	return nil
 }
 
+func (uc *HandleMentionUseCase) SetPersonalityProvider(
+	provider core.PersonalityProvider,
+) error {
+	if uc == nil {
+		return fmt.Errorf("handle mention use case is nil")
+	}
+
+	if provider == nil {
+		return fmt.Errorf("personality provider is required")
+	}
+
+	uc.personalityProvider = provider
+	return nil
+}
+
 func (uc *HandleMentionUseCase) HandleMention(
 	ctx context.Context,
 	event core.MentionEvent,
@@ -162,6 +178,15 @@ func (uc *HandleMentionUseCase) HandleMention(
 	)
 	if err != nil {
 		return fmt.Errorf("build conversation context: %w", err)
+	}
+
+	if uc.personalityProvider != nil {
+		personalityCtx, err := uc.personalityProvider.GetPersonality(ctx)
+		if err != nil {
+			return fmt.Errorf("get personality: %w", err)
+		}
+
+		conversationContext.Personality = &personalityCtx
 	}
 
 	if uc.memoryRetriever != nil {
