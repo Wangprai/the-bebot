@@ -55,11 +55,13 @@ type Memory struct {
 	Tags       []string
 
 	SourceMessageID string
+	SourceUserIDs   []string
 	CandidateID     string
 	CandidateIndex  int
 
 	UsageCount int
 	LastUsedAt *time.Time
+	ExpiresAt  *time.Time
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -118,6 +120,10 @@ func NewMemory(memory Memory) (Memory, error) {
 	}
 
 	memory.Tags = normalizeTags(memory.Tags)
+	memory.SourceUserIDs = normalizeUserIDs(memory.SourceUserIDs)
+	if memory.Scope == MemoryScopeMember && memory.UserID != "" && len(memory.SourceUserIDs) == 0 {
+		memory.SourceUserIDs = []string{memory.UserID}
+	}
 
 	return memory, nil
 }
@@ -158,6 +164,33 @@ func normalizeTags(tags []string) []string {
 
 		seen[tag] = struct{}{}
 		normalized = append(normalized, tag)
+	}
+
+	return normalized
+}
+
+func normalizeUserIDs(userIDs []string) []string {
+	if len(userIDs) == 0 {
+		return nil
+	}
+
+	normalized := make([]string, 0, len(userIDs))
+	seen := make(map[string]struct{}, len(userIDs))
+
+	for _, id := range userIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+
+	if len(normalized) == 0 {
+		return nil
 	}
 
 	return normalized

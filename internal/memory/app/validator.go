@@ -95,6 +95,7 @@ func (v *MemoryValidator) Validate(
 		Confidence:      input.Confidence,
 		Tags:            input.Tags,
 		SourceMessageID: source.MessageID,
+		SourceUserIDs:   []string{source.UserID},
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}

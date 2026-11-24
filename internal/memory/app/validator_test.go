@@ -155,6 +155,10 @@ func TestMemoryValidatorCommunityMemory(t *testing.T) {
 	if memory.UserID != "" {
 		t.Errorf("community memory UserID = %s, want empty", memory.UserID)
 	}
+
+	if len(memory.SourceUserIDs) != 1 || memory.SourceUserIDs[0] != "user-001" {
+		t.Errorf("community memory SourceUserIDs = %v, want [user-001]", memory.SourceUserIDs)
+	}
 }
 
 func TestMemoryValidatorRejectsInvalidScope(t *testing.T) {
