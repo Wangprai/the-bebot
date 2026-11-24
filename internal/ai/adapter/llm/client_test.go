@@ -510,3 +510,71 @@ func TestGenerateUsesGoOwnedPersonalityInSystemPrompt(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 }
+
+func TestGenerateIncludesMoodSeparatelyFromPersonality(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			var request chatRequest
+
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+
+			systemPrompt := request.Messages[0].Content
+
+			for _, expected := range []string{
+				"Personality traits:",
+				"Current mood state (separate from underlying Personality):",
+				"Effective mood: sarcastic (intensity 4/5)",
+				"Community baseline mood: playful (intensity 2/5)",
+				"Temporary channel interaction mood: sarcastic (intensity 4/5)",
+			} {
+				if !strings.Contains(systemPrompt, expected) {
+					t.Errorf("system prompt missing %q:\n%s", expected, systemPrompt)
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"choices": [
+					{
+						"message": {
+							"content": "Oh suuuure, totally believable."
+						}
+					}
+				]
+			}`))
+		},
+	))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL)
+
+	_, err := client.Generate(
+		context.Background(),
+		core.ConversationContext{
+			Messages: []core.Message{
+				{Content: "yeah right"},
+			},
+			Personality: &core.PersonalityContext{
+				Name:           "The Bebot",
+				Traits:         []string{"playful and witty"},
+				SpeakingStyle:  []string{"casual banter"},
+				TeasingRules:   []string{"light teasing"},
+				Boundaries:     []string{"never humiliate"},
+				LanguagePolicy: "match community language",
+			},
+			Mood: &core.MoodContext{
+				EffectiveCategory:  "sarcastic",
+				EffectiveIntensity: 4,
+				CommunityCategory:  "playful",
+				CommunityIntensity: 2,
+				TemporaryCategory:  "sarcastic",
+				TemporaryIntensity: 4,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+}

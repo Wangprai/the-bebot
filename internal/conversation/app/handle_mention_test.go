@@ -847,3 +847,89 @@ func TestHandleMentionPersonalityErrorStopsPipeline(t *testing.T) {
 		t.Error("downstream dependencies should not be called on personality error")
 	}
 }
+
+type mockMoodResolver struct {
+	mood   core.MoodContext
+	err    error
+	called bool
+
+	receivedGuildID   string
+	receivedChannelID string
+	receivedContent   string
+}
+
+func (m *mockMoodResolver) ResolveMood(
+	ctx context.Context,
+	guildID string,
+	channelID string,
+	triggerContent string,
+) (core.MoodContext, error) {
+	m.called = true
+	m.receivedGuildID = guildID
+	m.receivedChannelID = channelID
+	m.receivedContent = triggerContent
+	return m.mood, m.err
+}
+
+func TestHandleMentionInjectsMoodContext(t *testing.T) {
+	useCase, _, _, generator, sender, event := newTestUseCase()
+
+	resolver := &mockMoodResolver{
+		mood: core.MoodContext{
+			EffectiveCategory:  "cheerful",
+			EffectiveIntensity: 3,
+			CommunityCategory:  "playful",
+			CommunityIntensity: 2,
+			TemporaryCategory:  "cheerful",
+			TemporaryIntensity: 3,
+		},
+	}
+
+	if err := useCase.SetMoodResolver(nil); err == nil {
+		t.Fatal("expected error for nil mood resolver")
+	}
+
+	if err := useCase.SetMoodResolver(resolver); err != nil {
+		t.Fatalf("SetMoodResolver() error = %v", err)
+	}
+
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("HandleMention() error = %v", err)
+	}
+
+	if !resolver.called {
+		t.Fatal("expected MoodResolver to be called")
+	}
+
+	if resolver.receivedGuildID != event.GuildID ||
+		resolver.receivedChannelID != event.ChannelID ||
+		resolver.receivedContent != event.Content {
+		t.Errorf("unexpected mood resolver inputs: %+v", resolver)
+	}
+
+	if generator.receivedContext.Mood == nil ||
+		generator.receivedContext.Mood.EffectiveCategory != "cheerful" ||
+		generator.receivedContext.Mood.EffectiveIntensity != 3 {
+		t.Fatalf("expected Mood in LLM context, got %+v", generator.receivedContext.Mood)
+	}
+
+	if !sender.called {
+		t.Error("expected MessageSender to be called")
+	}
+}
+
+func TestHandleMentionMoodErrorStopsPipeline(t *testing.T) {
+	useCase, _, _, generator, sender, event := newTestUseCase()
+
+	expectedErr := errors.New("mood store unavailable")
+	_ = useCase.SetMoodResolver(&mockMoodResolver{err: expectedErr})
+
+	err := useCase.HandleMention(context.Background(), event)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected mood error %v, got %v", expectedErr, err)
+	}
+
+	if generator.called || sender.called {
+		t.Error("downstream dependencies should not be called on mood error")
+	}
+}

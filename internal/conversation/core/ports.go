@@ -75,3 +75,13 @@ type PersonalityProvider interface {
 		ctx context.Context,
 	) (PersonalityContext, error)
 }
+
+// MoodResolver resolves and updates effective Mood for an incoming interaction.
+type MoodResolver interface {
+	ResolveMood(
+		ctx context.Context,
+		guildID string,
+		channelID string,
+		triggerContent string,
+	) (MoodContext, error)
+}

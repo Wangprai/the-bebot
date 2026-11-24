@@ -157,6 +157,15 @@ type PersonalityContext struct {
 	LanguagePolicy string
 }
 
+type MoodContext struct {
+	EffectiveCategory  string
+	EffectiveIntensity int
+	CommunityCategory  string
+	CommunityIntensity int
+	TemporaryCategory  string
+	TemporaryIntensity int
+}
+
 type ConversationContext struct {
 	GuildID          string
 	ChannelID        string
@@ -164,6 +173,7 @@ type ConversationContext struct {
 	Messages         []Message
 	Memories         []MemoryContext
 	Personality      *PersonalityContext
+	Mood             *MoodContext
 	CreatedAt        time.Time
 	ExpiresAt        time.Time
 }

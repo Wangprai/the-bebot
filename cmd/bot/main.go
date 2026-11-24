@@ -23,6 +23,9 @@ import (
 	memorymongodb "the-bebot/internal/memory/adapter/mongodb"
 	memoryapp "the-bebot/internal/memory/app"
 	memorycore "the-bebot/internal/memory/core"
+	moodadapter "the-bebot/internal/mood/adapter/conversation"
+	moodmongodb "the-bebot/internal/mood/adapter/mongodb"
+	moodapp "the-bebot/internal/mood/app"
 	personalityadapter "the-bebot/internal/personality/adapter/conversation"
 	personalityapp "the-bebot/internal/personality/app"
 	personalitycore "the-bebot/internal/personality/core"
@@ -310,6 +313,30 @@ func run() error {
 		getPersonalityUseCase,
 	)
 
+	// Initialize Mood System (Persistent Community Mood + In-Memory Temporary Mood)
+	communityMoodRepository, err := moodmongodb.NewCommunityMoodRepository(
+		db.Database,
+	)
+	if err != nil {
+		return fmt.Errorf("initialize community mood repository: %w", err)
+	}
+
+	moodIndexCtx, moodIndexCancel := context.WithTimeout(ctx, 10*time.Second)
+	err = communityMoodRepository.EnsureIndexes(moodIndexCtx)
+	moodIndexCancel()
+	if err != nil {
+		return fmt.Errorf("ensure community mood indexes: %w", err)
+	}
+
+	appLogger.Info("Community mood indexes ensured")
+
+	moodService, err := moodapp.NewMoodService(communityMoodRepository)
+	if err != nil {
+		return fmt.Errorf("initialize mood service: %w", err)
+	}
+
+	moodResolver := moodadapter.NewMoodResolverAdapter(moodService)
+
 	// Initialize Conversation Service
 	conversationService := core.NewConversationService()
 
@@ -335,6 +362,12 @@ func run() error {
 		personalityProvider,
 	); err != nil {
 		return fmt.Errorf("configure personality provider: %w", err)
+	}
+
+	if err := mentionHandler.SetMoodResolver(
+		moodResolver,
+	); err != nil {
+		return fmt.Errorf("configure mood resolver: %w", err)
 	}
 
 	if err := mentionHandler.SetMaxRetrievedMemories(

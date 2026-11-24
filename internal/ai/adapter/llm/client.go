@@ -113,6 +113,10 @@ func (c *Client) Generate(
 		}
 	}
 
+	if conversationContext.Mood != nil {
+		baseSystemPrompt = buildMoodSystemPrompt(baseSystemPrompt, *conversationContext.Mood)
+	}
+
 	systemPrompt, err := buildMemorySystemPrompt(
 		baseSystemPrompt,
 		conversationContext.Memories,
@@ -186,6 +190,33 @@ func buildPersonalitySystemPrompt(
 	}
 
 	return strings.TrimSpace(prompt.String())
+}
+
+func buildMoodSystemPrompt(
+	systemPrompt string,
+	mood core.MoodContext,
+) string {
+	category := strings.TrimSpace(mood.EffectiveCategory)
+	if category == "" || mood.EffectiveIntensity <= 0 {
+		return systemPrompt
+	}
+
+	var prompt strings.Builder
+	prompt.WriteString(systemPrompt)
+	prompt.WriteString("\n\nCurrent mood state (separate from underlying Personality):\n")
+	fmt.Fprintf(&prompt, "- Effective mood: %s (intensity %d/5)\n", category, mood.EffectiveIntensity)
+
+	if communityCategory := strings.TrimSpace(mood.CommunityCategory); communityCategory != "" && mood.CommunityIntensity > 0 {
+		fmt.Fprintf(&prompt, "- Community baseline mood: %s (intensity %d/5)\n", communityCategory, mood.CommunityIntensity)
+	}
+
+	if tempCategory := strings.TrimSpace(mood.TemporaryCategory); tempCategory != "" && mood.TemporaryIntensity > 0 {
+		fmt.Fprintf(&prompt, "- Temporary channel interaction mood: %s (intensity %d/5)\n", tempCategory, mood.TemporaryIntensity)
+	}
+
+	prompt.WriteString("- Let this mood naturally influence your tone and energy without violating Personality boundaries.")
+
+	return prompt.String()
 }
 
 func buildMemorySystemPrompt(

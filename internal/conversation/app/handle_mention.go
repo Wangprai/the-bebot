@@ -24,6 +24,7 @@ type HandleMentionUseCase struct {
 	memoryRetriever        core.MemoryRetriever
 	conversationRepository core.ConversationRepository
 	personalityProvider    core.PersonalityProvider
+	moodResolver           core.MoodResolver
 
 	maxMessages          int
 	maxRetrievedMemories int
@@ -110,6 +111,21 @@ func (uc *HandleMentionUseCase) SetPersonalityProvider(
 	return nil
 }
 
+func (uc *HandleMentionUseCase) SetMoodResolver(
+	resolver core.MoodResolver,
+) error {
+	if uc == nil {
+		return fmt.Errorf("handle mention use case is nil")
+	}
+
+	if resolver == nil {
+		return fmt.Errorf("mood resolver is required")
+	}
+
+	uc.moodResolver = resolver
+	return nil
+}
+
 func (uc *HandleMentionUseCase) HandleMention(
 	ctx context.Context,
 	event core.MentionEvent,
@@ -187,6 +203,20 @@ func (uc *HandleMentionUseCase) HandleMention(
 		}
 
 		conversationContext.Personality = &personalityCtx
+	}
+
+	if uc.moodResolver != nil {
+		moodCtx, err := uc.moodResolver.ResolveMood(
+			ctx,
+			event.GuildID,
+			event.ChannelID,
+			event.Content,
+		)
+		if err != nil {
+			return fmt.Errorf("resolve mood: %w", err)
+		}
+
+		conversationContext.Mood = &moodCtx
 	}
 
 	if uc.memoryRetriever != nil {
