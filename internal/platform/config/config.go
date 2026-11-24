@@ -41,15 +41,15 @@ type MongoDBConfig struct {
 }
 
 type LLMConfig struct {
-	Provider string
-	APIKey   string
-	BaseURL  string
-	Model    string
+	APIKey  string
+	BaseURL string
+	Model   string
 }
 
 type ConversationConfig struct {
-	Timeout     time.Duration
-	MaxMessages int
+	Timeout        time.Duration
+	MentionTimeout time.Duration
+	MaxMessages    int
 }
 
 type MemoryConfig struct {
@@ -83,15 +83,15 @@ func LoadFromEnv() (*Config, error) {
 		},
 
 		LLM: LLMConfig{
-			Provider: getEnv("LLM_PROVIDER", ""),
-			APIKey:   getEnv("LLM_API_KEY", ""),
-			BaseURL:  getEnv("LLM_BASE_URL", ""),
-			Model:    getEnv("LLM_MODEL", ""),
+			APIKey:  getEnv("LLM_API_KEY", ""),
+			BaseURL: getEnv("LLM_BASE_URL", ""),
+			Model:   getEnv("LLM_MODEL", ""),
 		},
 
 		Conversation: ConversationConfig{
-			Timeout:     30 * time.Second,
-			MaxMessages: 15,
+			Timeout:        30 * time.Second,
+			MentionTimeout: 60 * time.Second,
+			MaxMessages:    15,
 		},
 
 		Memory: MemoryConfig{
@@ -106,13 +106,19 @@ func LoadFromEnv() (*Config, error) {
 			LanguagePolicy: strings.TrimSpace(getEnv("PERSONALITY_LANGUAGE_POLICY", "")),
 		},
 
-		LogLevel: getEnv("LOG_LEVEL", "debug"),
+		LogLevel: getEnv("LOG_LEVEL", "info"),
 	}
 
 	var err error
 
 	if cfg.Conversation.Timeout, err = getDuration(
 		"CONVERSATION_TIMEOUT", cfg.Conversation.Timeout,
+	); err != nil {
+		return nil, err
+	}
+
+	if cfg.Conversation.MentionTimeout, err = getDuration(
+		"MENTION_TIMEOUT", cfg.Conversation.MentionTimeout,
 	); err != nil {
 		return nil, err
 	}
@@ -155,6 +161,14 @@ func (c *Config) Validate() error {
 
 	if c.Conversation.Timeout <= 0 {
 		return errors.New("CONVERSATION_TIMEOUT must be greater than zero")
+	}
+
+	if c.Conversation.MentionTimeout <= 0 {
+		return errors.New("MENTION_TIMEOUT must be greater than zero")
+	}
+
+	if c.Conversation.MentionTimeout <= c.Conversation.Timeout {
+		return errors.New("MENTION_TIMEOUT must be greater than CONVERSATION_TIMEOUT")
 	}
 
 	if c.Conversation.MaxMessages <= 0 {

@@ -163,6 +163,9 @@ func run() error {
 		retrieveMemories := memoryapp.NewRetrieveMemoriesUseCase(
 			memoryRepository,
 		)
+		if err := retrieveMemories.SetLogger(appLogger); err != nil {
+			return fmt.Errorf("configure memory retrieval logger: %w", err)
+		}
 		memoryRetriever = memoryadapter.NewMemoryRetrieverAdapter(
 			retrieveMemories,
 		)
@@ -428,7 +431,11 @@ func run() error {
 		return fmt.Errorf("configure max retrieved memories: %w", err)
 	}
 
-	if err := mentionHandler.SetTimeout(cfg.Conversation.Timeout); err != nil {
+	if err := mentionHandler.SetLogger(appLogger); err != nil {
+		return fmt.Errorf("configure mention handler logger: %w", err)
+	}
+
+	if err := mentionHandler.SetTimeout(cfg.Conversation.MentionTimeout); err != nil {
 		return fmt.Errorf("configure mention timeout: %w", err)
 	}
 

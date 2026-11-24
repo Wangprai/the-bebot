@@ -1,11 +1,12 @@
 package config
 
 import (
+	"os"
 	"testing"
 	"time"
 )
 
-func clearRelevantEnv(t *testing.T) {
+func unsetRelevantEnv(t *testing.T) {
 	t.Helper()
 
 	keys := []string{
@@ -14,32 +15,29 @@ func clearRelevantEnv(t *testing.T) {
 		"DISCORD_BOT_TOKEN",
 		"MONGODB_URI",
 		"MONGODB_DATABASE",
-		"LLM_PROVIDER",
 		"LLM_API_KEY",
 		"LLM_BASE_URL",
 		"LLM_MODEL",
 		"CONVERSATION_TIMEOUT",
+		"MENTION_TIMEOUT",
 		"MAX_CONTEXT_MESSAGES",
 		"MEMORY_ENABLED",
 		"MEMORY_MAX_RETRIEVED_MEMORIES",
 		"MEMORY_WORKER_COUNT",
+		"PERSONALITY_NAME",
+		"PERSONALITY_EXTRA_TRAITS",
+		"PERSONALITY_LANGUAGE_POLICY",
 		"LOG_LEVEL",
 	}
 
 	for _, key := range keys {
 		t.Setenv(key, "")
+		_ = os.Unsetenv(key)
 	}
 }
 
 func TestLoadFromEnvDefaults(t *testing.T) {
-	// Set only the parsed keys explicitly via t.Setenv to verify default parsing
-	// when optional keys use their documented values.
-	t.Setenv("CONVERSATION_TIMEOUT", "30s")
-	t.Setenv("MAX_CONTEXT_MESSAGES", "15")
-	t.Setenv("MEMORY_ENABLED", "true")
-	t.Setenv("MEMORY_MAX_RETRIEVED_MEMORIES", "5")
-	t.Setenv("MEMORY_WORKER_COUNT", "2")
-	t.Setenv("LOG_LEVEL", "debug")
+	unsetRelevantEnv(t)
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -48,6 +46,10 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 
 	if cfg.Conversation.Timeout != 30*time.Second {
 		t.Errorf("Timeout = %v, want 30s", cfg.Conversation.Timeout)
+	}
+
+	if cfg.Conversation.MentionTimeout != 60*time.Second {
+		t.Errorf("MentionTimeout = %v, want 60s", cfg.Conversation.MentionTimeout)
 	}
 
 	if cfg.Conversation.MaxMessages != 15 {
@@ -65,10 +67,14 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.Memory.WorkerCount != 2 {
 		t.Errorf("WorkerCount = %d, want 2", cfg.Memory.WorkerCount)
 	}
+
+	if cfg.LogLevel != "info" {
+		t.Errorf("LogLevel = %q, want info", cfg.LogLevel)
+	}
 }
 
 func TestLoadFromEnvOverrides(t *testing.T) {
-	clearRelevantEnv(t)
+	unsetRelevantEnv(t)
 
 	t.Setenv("APP_NAME", "bebot-test")
 	t.Setenv("APP_ENV", "production")
@@ -79,6 +85,7 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	t.Setenv("LLM_API_KEY", "key-123")
 	t.Setenv("LLM_MODEL", "model-x")
 	t.Setenv("CONVERSATION_TIMEOUT", "45s")
+	t.Setenv("MENTION_TIMEOUT", "90s")
 	t.Setenv("MAX_CONTEXT_MESSAGES", "20")
 	t.Setenv("MEMORY_ENABLED", "false")
 	t.Setenv("MEMORY_MAX_RETRIEVED_MEMORIES", "8")
@@ -86,7 +93,7 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	t.Setenv("PERSONALITY_NAME", "Custom Bebot")
 	t.Setenv("PERSONALITY_EXTRA_TRAITS", "curious, sharp , ")
 	t.Setenv("PERSONALITY_LANGUAGE_POLICY", "Speak Thai naturally")
-	t.Setenv("LOG_LEVEL", "info")
+	t.Setenv("LOG_LEVEL", "debug")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -99,6 +106,10 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 
 	if cfg.Conversation.Timeout != 45*time.Second {
 		t.Errorf("Timeout = %v, want 45s", cfg.Conversation.Timeout)
+	}
+
+	if cfg.Conversation.MentionTimeout != 90*time.Second {
+		t.Errorf("MentionTimeout = %v, want 90s", cfg.Conversation.MentionTimeout)
 	}
 
 	if cfg.Conversation.MaxMessages != 20 {
@@ -130,6 +141,10 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	if cfg.Personality.LanguagePolicy != "Speak Thai naturally" {
 		t.Errorf("Personality.LanguagePolicy = %q", cfg.Personality.LanguagePolicy)
 	}
+
+	if cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want debug", cfg.LogLevel)
+	}
 }
 
 func TestLoadFromEnvRejectsInvalidValues(t *testing.T) {
@@ -141,6 +156,11 @@ func TestLoadFromEnvRejectsInvalidValues(t *testing.T) {
 		{name: "invalid timeout format", key: "CONVERSATION_TIMEOUT", val: "not-a-duration"},
 		{name: "zero timeout", key: "CONVERSATION_TIMEOUT", val: "0s"},
 		{name: "negative timeout", key: "CONVERSATION_TIMEOUT", val: "-5s"},
+		{name: "invalid mention timeout format", key: "MENTION_TIMEOUT", val: "not-a-duration"},
+		{name: "zero mention timeout", key: "MENTION_TIMEOUT", val: "0s"},
+		{name: "negative mention timeout", key: "MENTION_TIMEOUT", val: "-5s"},
+		{name: "mention timeout equal to conversation timeout", key: "MENTION_TIMEOUT", val: "30s"},
+		{name: "mention timeout less than conversation timeout", key: "MENTION_TIMEOUT", val: "20s"},
 		{name: "non-int max messages", key: "MAX_CONTEXT_MESSAGES", val: "abc"},
 		{name: "zero max messages", key: "MAX_CONTEXT_MESSAGES", val: "0"},
 		{name: "negative max messages", key: "MAX_CONTEXT_MESSAGES", val: "-1"},
@@ -155,7 +175,9 @@ func TestLoadFromEnvRejectsInvalidValues(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			unsetRelevantEnv(t)
 			t.Setenv("CONVERSATION_TIMEOUT", "30s")
+			t.Setenv("MENTION_TIMEOUT", "60s")
 			t.Setenv("MAX_CONTEXT_MESSAGES", "15")
 			t.Setenv("MEMORY_ENABLED", "true")
 			t.Setenv("MEMORY_MAX_RETRIEVED_MEMORIES", "5")

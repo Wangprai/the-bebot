@@ -106,7 +106,7 @@ Discord Message (human authors only; ignores bot authors and DMs)
 Discord Gateway
       |
       v
-Mention Handler (enforces CONVERSATION_TIMEOUT)
+Mention Handler (enforces MENTION_TIMEOUT)
       |
       v
 Conversation Context (live Discord REST fetch + MongoDB 24h fallback/dedup)
@@ -246,7 +246,7 @@ Conversation Context (`internal/conversation/`) provides chronological recent me
 - The trigger message is guaranteed to be included and sorted chronologically, bounded by `MAX_CONTEXT_MESSAGES` (default `15`) with a 24-hour TTL.
 - The latest `ConversationContext` snapshot per `(guild_id, channel_id)` is upserted into MongoDB (`conversation_contexts`, unique `(guild_id, channel_id)` index and 24-hour TTL index on `expires_at`).
 - When live Discord messages return fewer than `maxMessages`, non-duplicate messages from the latest non-expired snapshot supplement context (live messages take precedence). If live Discord fetch fails transiently, a non-expired persisted snapshot serves as fallback.
-- `HandleMentionUseCase` enforces `CONVERSATION_TIMEOUT` per mention.
+- `HandleMentionUseCase` enforces `MENTION_TIMEOUT` per mention, while `CONVERSATION_TIMEOUT` bounds individual LLM HTTP calls.
 
 ---
 
@@ -309,11 +309,11 @@ Configuration is loaded via `internal/platform/config` from environment variable
 
 - **Discord:** `DISCORD_BOT_TOKEN`
 - **MongoDB:** `MONGODB_URI`, `MONGODB_DATABASE`
-- **LLM:** `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
-- **Conversation:** `CONVERSATION_TIMEOUT` (default `30s`, must be `> 0`), `MAX_CONTEXT_MESSAGES` (default `15`, must be `> 0`)
+- **LLM:** `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
+- **Conversation:** `CONVERSATION_TIMEOUT` (default `30s`, LLM HTTP client timeout, must be `> 0`), `MENTION_TIMEOUT` (default `60s`, whole mention pipeline timeout, must be `> CONVERSATION_TIMEOUT`), `MAX_CONTEXT_MESSAGES` (default `15`, must be `> 0`)
 - **Memory:** `MEMORY_ENABLED` (default `true`), `MEMORY_MAX_RETRIEVED_MEMORIES` (default `5`, must be `> 0`), `MEMORY_WORKER_COUNT` (default `2`, must be `> 0`)
 - **Personality (optional overrides):** `PERSONALITY_NAME`, `PERSONALITY_EXTRA_TRAITS` (comma-separated), `PERSONALITY_LANGUAGE_POLICY`
-- **App / Logging:** `APP_NAME`, `APP_ENV`, `LOG_LEVEL`
+- **App / Logging:** `APP_NAME`, `APP_ENV`, `LOG_LEVEL` (default `info`)
 
 Unused legacy keys `MEMORY_MAX_CANDIDATES` and `MEMORY_QUEUE_SIZE` were removed in favor of `MEMORY_MAX_RETRIEVED_MEMORIES` and MongoDB-backed polling.
 

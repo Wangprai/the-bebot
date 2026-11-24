@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -31,6 +33,7 @@ type HandleMentionUseCase struct {
 	personalityProvider    core.PersonalityProvider
 	moodResolver           core.MoodResolver
 	communitySyncer        core.CommunityContextSyncer
+	logger                 *slog.Logger
 
 	maxMessages          int
 	maxRetrievedMemories int
@@ -56,6 +59,7 @@ func NewHandleMentionUseCase(
 		messageSender:        messageSender,
 		candidateCreator:     candidateCreator,
 		memoryRetriever:      memoryRetriever,
+		logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
 		maxMessages:          maxMessages,
 		maxRetrievedMemories: defaultMaxRetrievedMemories,
 		contextTTL:           contextTTL,
@@ -164,6 +168,25 @@ func (uc *HandleMentionUseCase) SetTypingIndicator(
 	return nil
 }
 
+func (uc *HandleMentionUseCase) SetLogger(logger *slog.Logger) error {
+	if uc == nil {
+		return fmt.Errorf("handle mention use case is nil")
+	}
+
+	if logger == nil {
+		return fmt.Errorf("logger is required")
+	}
+
+	uc.logger = logger
+	return nil
+}
+
+func (uc *HandleMentionUseCase) logWarn(msg string, args ...any) {
+	if uc != nil && uc.logger != nil {
+		uc.logger.Warn(msg, args...)
+	}
+}
+
 func (uc *HandleMentionUseCase) HandleMention(
 	ctx context.Context,
 	event core.MentionEvent,
@@ -262,19 +285,29 @@ func (uc *HandleMentionUseCase) HandleMention(
 			event.Content,
 		)
 		if err != nil {
-			return fmt.Errorf("resolve mood: %w", err)
+			uc.logWarn(
+				"Failed to resolve mood; continuing without mood context",
+				"guild_id", event.GuildID,
+				"channel_id", event.ChannelID,
+				"error", err,
+			)
+		} else {
+			conversationContext.Mood = &moodCtx
 		}
-
-		conversationContext.Mood = &moodCtx
 	}
 
 	if uc.communitySyncer != nil {
 		communityCtx, err := uc.communitySyncer.SyncMentionContext(ctx, event)
 		if err != nil {
-			return fmt.Errorf("sync community context: %w", err)
+			uc.logWarn(
+				"Failed to sync community context; continuing without community context",
+				"guild_id", event.GuildID,
+				"user_id", event.UserID,
+				"error", err,
+			)
+		} else {
+			conversationContext.Community = &communityCtx
 		}
-
-		conversationContext.Community = &communityCtx
 	}
 
 	if uc.memoryRetriever != nil {
@@ -290,10 +323,15 @@ func (uc *HandleMentionUseCase) HandleMention(
 			limit,
 		)
 		if err != nil {
-			return fmt.Errorf("retrieve memories: %w", err)
+			uc.logWarn(
+				"Failed to retrieve memories; continuing without memory context",
+				"guild_id", event.GuildID,
+				"user_id", event.UserID,
+				"error", err,
+			)
+		} else {
+			conversationContext.Memories = memories
 		}
-
-		conversationContext.Memories = memories
 	}
 
 	// Generate AI response while showing typing indicator.
@@ -326,22 +364,35 @@ func (uc *HandleMentionUseCase) HandleMention(
 		return fmt.Errorf("send response: %w", err)
 	}
 
-	// Persist latest conversation context snapshot (24h TTL).
+	// Post-send steps are best-effort: create memory candidate first, then save snapshot.
+	if uc.candidateCreator != nil {
+		if err := uc.candidateCreator.CreateCandidate(
+			ctx,
+			conversationContext,
+		); err != nil {
+			uc.logWarn(
+				"Failed to create memory candidate after sending reply",
+				"guild_id", event.GuildID,
+				"channel_id", event.ChannelID,
+				"message_id", event.MessageID,
+				"error", err,
+			)
+		}
+	}
+
 	if uc.conversationRepository != nil {
 		if err := uc.conversationRepository.Save(
 			ctx,
 			conversationContext,
 		); err != nil {
-			return fmt.Errorf("save conversation context: %w", err)
+			uc.logWarn(
+				"Failed to save conversation context after sending reply",
+				"guild_id", event.GuildID,
+				"channel_id", event.ChannelID,
+				"message_id", event.MessageID,
+				"error", err,
+			)
 		}
-	}
-
-	// Create memory candidate for background processing.
-	if err := uc.candidateCreator.CreateCandidate(
-		ctx,
-		conversationContext,
-	); err != nil {
-		return fmt.Errorf("create memory candidate: %w", err)
 	}
 
 	return nil

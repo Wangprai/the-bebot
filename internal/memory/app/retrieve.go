@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -24,6 +26,7 @@ type RetrieveMemoriesInput struct {
 type RetrieveMemoriesUseCase struct {
 	repository core.MemoryRepository
 	clock      func() time.Time
+	logger     *slog.Logger
 }
 
 func NewRetrieveMemoriesUseCase(
@@ -32,7 +35,21 @@ func NewRetrieveMemoriesUseCase(
 	return &RetrieveMemoriesUseCase{
 		repository: repository,
 		clock:      time.Now,
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
+}
+
+func (uc *RetrieveMemoriesUseCase) SetLogger(logger *slog.Logger) error {
+	if uc == nil {
+		return ErrMemoryRepositoryNil
+	}
+
+	if logger == nil {
+		return errors.New("logger is required")
+	}
+
+	uc.logger = logger
+	return nil
 }
 
 func (uc *RetrieveMemoriesUseCase) Execute(
@@ -75,11 +92,14 @@ func (uc *RetrieveMemoriesUseCase) Execute(
 			memory.ID,
 			usedAt,
 		); err != nil {
-			return nil, fmt.Errorf(
-				"update memory usage %s: %w",
-				memory.ID,
-				err,
-			)
+			if uc.logger != nil {
+				uc.logger.Warn(
+					"Failed to update memory usage; returning retrieved memories",
+					"guild_id", input.GuildID,
+					"memory_id", memory.ID,
+					"error", err,
+				)
+			}
 		}
 	}
 

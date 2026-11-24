@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -226,7 +229,7 @@ func TestRetrieveMemoriesFindError(t *testing.T) {
 	}
 }
 
-func TestRetrieveMemoriesUpdateUsageError(t *testing.T) {
+func TestRetrieveMemoriesUpdateUsageErrorLogsWarningAndReturnsMemories(t *testing.T) {
 	expectedErr := errors.New("update failed")
 
 	repository := &mockMemoryRepository{
@@ -236,14 +239,31 @@ func TestRetrieveMemoriesUpdateUsageError(t *testing.T) {
 
 	useCase := NewRetrieveMemoriesUseCase(repository)
 
-	_, err := useCase.Execute(context.Background(), RetrieveMemoriesInput{
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	if err := useCase.SetLogger(nil); err == nil {
+		t.Fatal("expected error for nil logger")
+	}
+	if err := useCase.SetLogger(logger); err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
+	result, err := useCase.Execute(context.Background(), RetrieveMemoriesInput{
 		GuildID: "guild-001",
 		UserID:  "user-001",
 		Limit:   10,
 	})
 
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected update error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected memories to be returned despite UpdateUsage error, got %v", err)
+	}
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 memories, got %d", len(result))
+	}
+
+	if !strings.Contains(logBuf.String(), "update failed") {
+		t.Errorf("expected warning log for UpdateUsage failure, got %q", logBuf.String())
 	}
 }
 

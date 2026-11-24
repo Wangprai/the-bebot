@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -473,25 +476,37 @@ func TestHandleMentionInjectsRetrievedMemories(t *testing.T) {
 	}
 }
 
-func TestHandleMentionMemoryRetrievalErrorStopsPipeline(t *testing.T) {
+func TestHandleMentionContinuesOnMemoryRetrievalError(t *testing.T) {
 	useCase, _, _, generator, sender, event := newTestUseCase()
 
-	expectedErr := errors.New("memory store unavailable")
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	if err := useCase.SetLogger(logger); err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
 	useCase.memoryRetriever = &mockMemoryRetriever{
-		err: expectedErr,
+		err: errors.New("memory store unavailable"),
 	}
 
-	err := useCase.HandleMention(context.Background(), event)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected error %v, got %v", expectedErr, err)
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("expected reply to succeed despite memory retrieval error, got %v", err)
 	}
 
-	if generator.called {
-		t.Error("ResponseGenerator should not be called when memory retrieval fails")
+	if !generator.called {
+		t.Error("ResponseGenerator should still be called when memory retrieval fails")
 	}
 
-	if sender.called {
-		t.Error("MessageSender should not be called when memory retrieval fails")
+	if len(generator.receivedContext.Memories) != 0 {
+		t.Errorf("expected no memories on retrieval error, got %+v", generator.receivedContext.Memories)
+	}
+
+	if !sender.called {
+		t.Error("MessageSender should still be called when memory retrieval fails")
+	}
+
+	if !strings.Contains(logBuf.String(), "memory store unavailable") {
+		t.Errorf("expected warning log for memory retrieval failure, got %q", logBuf.String())
 	}
 }
 
@@ -819,17 +834,117 @@ func TestHandleMentionIgnoresExpiredFallbackAndReturnsFetchError(t *testing.T) {
 	}
 }
 
-func TestHandleMentionSaveConversationContextError(t *testing.T) {
-	useCase, _, _, _, _, event := newTestUseCase()
+func TestHandleMentionSaveConversationContextErrorIsLoggedAndNonFatal(t *testing.T) {
+	useCase, _, _, _, sender, event := newTestUseCase()
 
-	expectedErr := errors.New("mongodb write error")
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	if err := useCase.SetLogger(logger); err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
+	candidateCreator := &mockCandidateCreator{}
+	useCase.candidateCreator = candidateCreator
+
 	_ = useCase.SetConversationRepository(&mockConversationRepository{
-		saveErr: expectedErr,
+		saveErr: errors.New("mongodb write error"),
 	})
 
-	err := useCase.HandleMention(context.Background(), event)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected save error %v, got %v", expectedErr, err)
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("expected nil error when Save fails after send, got %v", err)
+	}
+
+	if !sender.called {
+		t.Error("expected reply to be sent")
+	}
+
+	if !candidateCreator.called {
+		t.Error("expected CreateCandidate to still be called when Save fails")
+	}
+
+	if !strings.Contains(logBuf.String(), "mongodb write error") {
+		t.Errorf("expected warning log for Save failure, got %q", logBuf.String())
+	}
+}
+
+type orderedCandidateCreator struct {
+	order *[]string
+	err   error
+}
+
+func (c *orderedCandidateCreator) CreateCandidate(
+	ctx context.Context,
+	conversationContext core.ConversationContext,
+) error {
+	*c.order = append(*c.order, "create_candidate")
+	return c.err
+}
+
+type orderedConversationRepository struct {
+	order   *[]string
+	saveErr error
+}
+
+func (r *orderedConversationRepository) Save(
+	ctx context.Context,
+	conversationContext core.ConversationContext,
+) error {
+	*r.order = append(*r.order, "save_context")
+	return r.saveErr
+}
+
+func (r *orderedConversationRepository) FindLatest(
+	ctx context.Context,
+	guildID string,
+	channelID string,
+) (*core.ConversationContext, error) {
+	return nil, nil
+}
+
+func (r *orderedConversationRepository) DeleteExpired(
+	ctx context.Context,
+	before time.Time,
+) error {
+	return nil
+}
+
+func TestHandleMentionRunsCreateCandidateBeforeSaveAndContinuesOnPostSendErrors(t *testing.T) {
+	useCase, _, _, _, sender, event := newTestUseCase()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	if err := useCase.SetLogger(nil); err == nil {
+		t.Fatal("expected error for nil logger")
+	}
+	if err := useCase.SetLogger(logger); err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
+	var order []string
+	useCase.candidateCreator = &orderedCandidateCreator{
+		order: &order,
+		err:   errors.New("candidate write failed"),
+	}
+	_ = useCase.SetConversationRepository(&orderedConversationRepository{
+		order:   &order,
+		saveErr: errors.New("snapshot save failed"),
+	})
+
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("expected nil error when post-send steps fail, got %v", err)
+	}
+
+	if !sender.called {
+		t.Error("expected reply to be sent")
+	}
+
+	if len(order) != 2 || order[0] != "create_candidate" || order[1] != "save_context" {
+		t.Fatalf("post-send execution order = %v, want [create_candidate save_context]", order)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "candidate write failed") || !strings.Contains(logs, "snapshot save failed") {
+		t.Errorf("expected both post-send warnings logged, got %q", logs)
 	}
 }
 
@@ -972,19 +1087,29 @@ func TestHandleMentionInjectsMoodContext(t *testing.T) {
 	}
 }
 
-func TestHandleMentionMoodErrorStopsPipeline(t *testing.T) {
+func TestHandleMentionContinuesOnMoodError(t *testing.T) {
 	useCase, _, _, generator, sender, event := newTestUseCase()
 
-	expectedErr := errors.New("mood store unavailable")
-	_ = useCase.SetMoodResolver(&mockMoodResolver{err: expectedErr})
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	_ = useCase.SetLogger(logger)
 
-	err := useCase.HandleMention(context.Background(), event)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected mood error %v, got %v", expectedErr, err)
+	_ = useCase.SetMoodResolver(&mockMoodResolver{err: errors.New("mood store unavailable")})
+
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("expected reply to succeed despite mood error, got %v", err)
 	}
 
-	if generator.called || sender.called {
-		t.Error("downstream dependencies should not be called on mood error")
+	if !generator.called || !sender.called {
+		t.Error("downstream dependencies should still be called on mood error")
+	}
+
+	if generator.receivedContext.Mood != nil {
+		t.Errorf("expected nil mood on mood error, got %+v", generator.receivedContext.Mood)
+	}
+
+	if !strings.Contains(logBuf.String(), "mood store unavailable") {
+		t.Errorf("expected warning log for mood failure, got %q", logBuf.String())
 	}
 }
 
@@ -1049,18 +1174,28 @@ func TestHandleMentionInjectsCommunityContext(t *testing.T) {
 	}
 }
 
-func TestHandleMentionCommunitySyncErrorStopsPipeline(t *testing.T) {
+func TestHandleMentionContinuesOnCommunitySyncError(t *testing.T) {
 	useCase, _, _, generator, sender, event := newTestUseCase()
 
-	expectedErr := errors.New("community store unavailable")
-	_ = useCase.SetCommunityContextSyncer(&mockCommunitySyncer{err: expectedErr})
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	_ = useCase.SetLogger(logger)
 
-	err := useCase.HandleMention(context.Background(), event)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected community sync error %v, got %v", expectedErr, err)
+	_ = useCase.SetCommunityContextSyncer(&mockCommunitySyncer{err: errors.New("community store unavailable")})
+
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("expected reply to succeed despite community sync error, got %v", err)
 	}
 
-	if generator.called || sender.called {
-		t.Error("downstream dependencies should not be called on community sync error")
+	if !generator.called || !sender.called {
+		t.Error("downstream dependencies should still be called on community sync error")
+	}
+
+	if generator.receivedContext.Community != nil {
+		t.Errorf("expected nil community context on sync error, got %+v", generator.receivedContext.Community)
+	}
+
+	if !strings.Contains(logBuf.String(), "community store unavailable") {
+		t.Errorf("expected warning log for community sync failure, got %q", logBuf.String())
 	}
 }
