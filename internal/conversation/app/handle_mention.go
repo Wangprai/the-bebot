@@ -526,6 +526,19 @@ func (uc *HandleMentionUseCase) HandleMention(
 		}
 	}
 
+	// Increment member interaction count only after the reply was sent successfully.
+	if uc.communitySyncer != nil {
+		if err := uc.communitySyncer.RecordInteraction(ctx, event); err != nil {
+			uc.logWarn(
+				"Failed to record completed member interaction",
+				"guild_id", event.GuildID,
+				"user_id", event.UserID,
+				"message_id", event.MessageID,
+				"error", err,
+			)
+		}
+	}
+
 	return nil
 }
 

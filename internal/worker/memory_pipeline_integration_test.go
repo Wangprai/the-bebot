@@ -689,7 +689,7 @@ func TestFullMVPPipelineEndToEndWithMongoDBAndLLM(t *testing.T) {
 		"Community and member context:",
 		"Community name: Bebot Club",
 		"Speaking member: Ali",
-		"Member interaction count with you: 2",
+		"Member interaction count with you: 1",
 		"Relevant long-term memories:",
 		"Loves espresso in the morning",
 	} {

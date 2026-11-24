@@ -102,4 +102,9 @@ type CommunityContextSyncer interface {
 		ctx context.Context,
 		event MentionEvent,
 	) (CommunityContext, error)
+
+	RecordInteraction(
+		ctx context.Context,
+		event MentionEvent,
+	) error
 }

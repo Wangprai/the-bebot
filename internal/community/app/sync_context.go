@@ -95,3 +95,39 @@ func (uc *SyncContextUseCase) Execute(
 		Member:    member,
 	}, nil
 }
+
+// RecordCompletedInteraction increments the member's interaction count after
+// a bot reply was sent successfully.
+func (uc *SyncContextUseCase) RecordCompletedInteraction(
+	ctx context.Context,
+	guildID string,
+	userID string,
+	completedAt time.Time,
+) error {
+	if uc == nil || uc.memberRepository == nil {
+		return errors.New("sync context use case is not initialized")
+	}
+
+	if ctx == nil {
+		return errors.New("context is required")
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if completedAt.IsZero() {
+		completedAt = uc.clock()
+	}
+
+	if err := uc.memberRepository.IncrementInteractionCount(
+		ctx,
+		guildID,
+		userID,
+		completedAt.UTC(),
+	); err != nil {
+		return fmt.Errorf("record completed interaction: %w", err)
+	}
+
+	return nil
+}

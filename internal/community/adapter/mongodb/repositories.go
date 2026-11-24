@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -61,8 +62,12 @@ func (r *CommunityRepository) UpsertInteraction(
 		{Key: "updated_at", Value: seenAt},
 	}
 
+	var unsetFields bson.D
+
 	if name != "" {
 		setFields = append(setFields, bson.E{Key: "name", Value: name})
+	} else if input.AuthoritativeName {
+		unsetFields = append(unsetFields, bson.E{Key: "name", Value: ""})
 	}
 
 	filter := bson.D{{Key: "guild_id", Value: guildID}}
@@ -71,6 +76,9 @@ func (r *CommunityRepository) UpsertInteraction(
 		{Key: "$setOnInsert", Value: bson.D{
 			{Key: "active_since", Value: seenAt},
 		}},
+	}
+	if len(unsetFields) > 0 {
+		update = append(update, bson.E{Key: "$unset", Value: unsetFields})
 	}
 
 	opts := options.FindOneAndUpdate().
@@ -179,8 +187,12 @@ func (r *MemberRepository) UpsertInteraction(
 		setFields = append(setFields, bson.E{Key: "display_name", Value: displayName})
 	}
 
+	var unsetFields bson.D
+
 	if nickname != "" {
 		setFields = append(setFields, bson.E{Key: "nickname", Value: nickname})
+	} else {
+		unsetFields = append(unsetFields, bson.E{Key: "nickname", Value: ""})
 	}
 
 	filter := bson.D{
@@ -190,9 +202,12 @@ func (r *MemberRepository) UpsertInteraction(
 
 	update := bson.D{
 		{Key: "$set", Value: setFields},
-		{Key: "$inc", Value: bson.D{
-			{Key: "interaction_count", Value: 1},
+		{Key: "$setOnInsert", Value: bson.D{
+			{Key: "interaction_count", Value: 0},
 		}},
+	}
+	if len(unsetFields) > 0 {
+		update = append(update, bson.E{Key: "$unset", Value: unsetFields})
 	}
 
 	opts := options.FindOneAndUpdate().
@@ -206,6 +221,58 @@ func (r *MemberRepository) UpsertInteraction(
 	}
 
 	return document.toDomain()
+}
+
+func (r *MemberRepository) IncrementInteractionCount(
+	ctx context.Context,
+	guildID string,
+	userID string,
+	interactedAt time.Time,
+) error {
+	if r == nil || r.collection == nil {
+		return errors.New("member repository is not initialized")
+	}
+
+	if ctx == nil {
+		return errors.New("context is required")
+	}
+
+	guildID = strings.TrimSpace(guildID)
+	userID = strings.TrimSpace(userID)
+
+	if guildID == "" {
+		return core.ErrInvalidGuildID
+	}
+
+	if userID == "" {
+		return core.ErrInvalidUserID
+	}
+
+	if interactedAt.IsZero() {
+		return core.ErrInvalidTimestamp
+	}
+
+	filter := bson.D{
+		{Key: "guild_id", Value: guildID},
+		{Key: "user_id", Value: userID},
+	}
+
+	update := bson.D{
+		{Key: "$set", Value: bson.D{
+			{Key: "guild_id", Value: guildID},
+			{Key: "user_id", Value: userID},
+			{Key: "last_seen_at", Value: interactedAt.UTC()},
+		}},
+		{Key: "$inc", Value: bson.D{
+			{Key: "interaction_count", Value: 1},
+		}},
+	}
+
+	if _, err := r.collection.UpdateOne(ctx, filter, update, options.Update().SetUpsert(true)); err != nil {
+		return fmt.Errorf("increment member interaction count: %w", err)
+	}
+
+	return nil
 }
 
 func (r *MemberRepository) FindByGuildAndUser(

@@ -31,9 +31,13 @@ func (m *mockCommunityRepo) FindByGuildID(ctx context.Context, guildID string) (
 }
 
 type mockMemberRepo struct {
-	member    core.Member
-	err       error
-	lastInput core.MemberUpsertInput
+	member           core.Member
+	err              error
+	incrementErr     error
+	lastInput        core.MemberUpsertInput
+	incrementCalls   int
+	incrementGuildID string
+	incrementUserID  string
 }
 
 func (m *mockMemberRepo) UpsertInteraction(
@@ -45,6 +49,18 @@ func (m *mockMemberRepo) UpsertInteraction(
 		return core.Member{}, m.err
 	}
 	return m.member, nil
+}
+
+func (m *mockMemberRepo) IncrementInteractionCount(
+	ctx context.Context,
+	guildID string,
+	userID string,
+	interactedAt time.Time,
+) error {
+	m.incrementCalls++
+	m.incrementGuildID = guildID
+	m.incrementUserID = userID
+	return m.incrementErr
 }
 
 func (m *mockMemberRepo) FindByGuildAndUser(ctx context.Context, guildID, userID string) (*core.Member, error) {
@@ -93,6 +109,19 @@ func TestSyncContextUseCaseSuccess(t *testing.T) {
 
 	if result.Community.Name != "Go Hangout" || result.Member.InteractionCount != 4 {
 		t.Fatalf("unexpected synced context: %+v", result)
+	}
+
+	if memRepo.incrementCalls != 0 {
+		t.Errorf("Execute() must not increment interaction count, got %d calls", memRepo.incrementCalls)
+	}
+
+	if err := uc.RecordCompletedInteraction(context.Background(), "guild-1", "user-1", now); err != nil {
+		t.Fatalf("RecordCompletedInteraction() error = %v", err)
+	}
+
+	if memRepo.incrementCalls != 1 || memRepo.incrementGuildID != "guild-1" || memRepo.incrementUserID != "user-1" {
+		t.Errorf("unexpected increment call: count=%d guild=%q user=%q",
+			memRepo.incrementCalls, memRepo.incrementGuildID, memRepo.incrementUserID)
 	}
 }
 

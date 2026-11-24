@@ -123,9 +123,31 @@ func TestCommunityRepositoryUpsertPreservesActiveSinceAndNeverGuessesLanguage(t 
 	if count != 1 {
 		t.Fatalf("expected 1 community doc, got %d", count)
 	}
+
+	// Authoritative empty guild name clears the stored name via $unset.
+	clearedAt := later.Add(time.Minute)
+	cleared, err := communityRepo.UpsertInteraction(ctx, core.CommunityUpsertInput{
+		GuildID:           "guild-100",
+		Name:              "",
+		AuthoritativeName: true,
+		SeenAt:            clearedAt,
+	})
+	if err != nil {
+		t.Fatalf("authoritative clear UpsertInteraction() error = %v", err)
+	}
+	if cleared.Name != "" {
+		t.Errorf("expected cleared guild name, got %q", cleared.Name)
+	}
+	var rawComm bson.M
+	if err := db.Collection("communities").FindOne(ctx, bson.M{"guild_id": "guild-100"}).Decode(&rawComm); err != nil {
+		t.Fatalf("find raw community doc error = %v", err)
+	}
+	if _, exists := rawComm["name"]; exists {
+		t.Errorf("expected name field to be $unset from MongoDB document, got %v", rawComm["name"])
+	}
 }
 
-func TestMemberRepositoryUpsertIncrementsInteractionCountAndIsolatesGuilds(t *testing.T) {
+func TestMemberRepositoryUpsertClearsNicknameAndSeparatesIncrement(t *testing.T) {
 	_, memberRepo, db := setupCommunityRepositories(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -133,6 +155,7 @@ func TestMemberRepositoryUpsertIncrementsInteractionCountAndIsolatesGuilds(t *te
 
 	t1 := time.Now().UTC().Truncate(time.Millisecond)
 
+	// Touch/upsert creates member with interaction_count = 0 (not incremented yet).
 	m1, err := memberRepo.UpsertInteraction(ctx, core.MemberUpsertInput{
 		GuildID:     "guild-1",
 		UserID:      "user-1",
@@ -143,10 +166,16 @@ func TestMemberRepositoryUpsertIncrementsInteractionCountAndIsolatesGuilds(t *te
 	if err != nil {
 		t.Fatalf("first UpsertInteraction() error = %v", err)
 	}
-	if m1.InteractionCount != 1 || m1.DisplayName != "Alice" || m1.Nickname != "Ali" {
+	if m1.InteractionCount != 0 || m1.DisplayName != "Alice" || m1.Nickname != "Ali" {
 		t.Fatalf("unexpected first member: %+v", m1)
 	}
 
+	// Increment interaction count after a reply is sent.
+	if err := memberRepo.IncrementInteractionCount(ctx, "guild-1", "user-1", t1.Add(time.Second)); err != nil {
+		t.Fatalf("first IncrementInteractionCount() error = %v", err)
+	}
+
+	// Second touch/upsert with updated nickname does not increment count.
 	t2 := t1.Add(time.Minute)
 	m2, err := memberRepo.UpsertInteraction(ctx, core.MemberUpsertInput{
 		GuildID:     "guild-1",
@@ -158,8 +187,44 @@ func TestMemberRepositoryUpsertIncrementsInteractionCountAndIsolatesGuilds(t *te
 	if err != nil {
 		t.Fatalf("second UpsertInteraction() error = %v", err)
 	}
-	if m2.InteractionCount != 2 || m2.Nickname != "Alice The Dev" || !m2.LastSeenAt.Equal(t2) {
+	if m2.InteractionCount != 1 || m2.Nickname != "Alice The Dev" || !m2.LastSeenAt.Equal(t2) {
 		t.Fatalf("unexpected second member: %+v", m2)
+	}
+
+	// Clearing nickname (empty string) must $unset nickname in MongoDB.
+	t3 := t2.Add(time.Minute)
+	m3, err := memberRepo.UpsertInteraction(ctx, core.MemberUpsertInput{
+		GuildID:     "guild-1",
+		UserID:      "user-1",
+		DisplayName: "Alice",
+		Nickname:    "",
+		SeenAt:      t3,
+	})
+	if err != nil {
+		t.Fatalf("clear nickname UpsertInteraction() error = %v", err)
+	}
+	if m3.Nickname != "" {
+		t.Fatalf("expected nickname to be cleared, got %q", m3.Nickname)
+	}
+
+	var rawMember bson.M
+	if err := db.Collection("members").FindOne(ctx, bson.M{"guild_id": "guild-1", "user_id": "user-1"}).Decode(&rawMember); err != nil {
+		t.Fatalf("find raw member doc error = %v", err)
+	}
+	if _, exists := rawMember["nickname"]; exists {
+		t.Errorf("expected nickname field to be $unset from MongoDB document, got %v", rawMember["nickname"])
+	}
+
+	if err := memberRepo.IncrementInteractionCount(ctx, "guild-1", "user-1", t3.Add(time.Second)); err != nil {
+		t.Fatalf("second IncrementInteractionCount() error = %v", err)
+	}
+
+	reloaded, err := memberRepo.FindByGuildAndUser(ctx, "guild-1", "user-1")
+	if err != nil || reloaded == nil {
+		t.Fatalf("FindByGuildAndUser() = %+v, err=%v", reloaded, err)
+	}
+	if reloaded.InteractionCount != 2 {
+		t.Errorf("InteractionCount = %d, want 2", reloaded.InteractionCount)
 	}
 
 	// Same user in a different guild is tracked separately.
@@ -172,8 +237,8 @@ func TestMemberRepositoryUpsertIncrementsInteractionCountAndIsolatesGuilds(t *te
 	if err != nil {
 		t.Fatalf("other guild UpsertInteraction() error = %v", err)
 	}
-	if otherGuildMember.InteractionCount != 1 {
-		t.Fatalf("other guild interaction count = %d, want 1", otherGuildMember.InteractionCount)
+	if otherGuildMember.InteractionCount != 0 {
+		t.Fatalf("other guild interaction count = %d, want 0 before increment", otherGuildMember.InteractionCount)
 	}
 
 	count, err := db.Collection("members").CountDocuments(ctx, bson.M{"user_id": "user-1"})

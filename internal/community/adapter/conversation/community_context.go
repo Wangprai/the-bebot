@@ -51,4 +51,24 @@ func (a *CommunityContextAdapter) SyncMentionContext(
 	}, nil
 }
 
+func (a *CommunityContextAdapter) RecordInteraction(
+	ctx context.Context,
+	event conversationcore.MentionEvent,
+) error {
+	if a == nil || a.useCase == nil {
+		return fmt.Errorf("community sync use case is nil")
+	}
+
+	if err := a.useCase.RecordCompletedInteraction(
+		ctx,
+		event.GuildID,
+		event.UserID,
+		event.MentionedAt,
+	); err != nil {
+		return fmt.Errorf("record community interaction: %w", err)
+	}
+
+	return nil
+}
+
 var _ conversationcore.CommunityContextSyncer = (*CommunityContextAdapter)(nil)

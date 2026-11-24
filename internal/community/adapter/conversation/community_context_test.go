@@ -28,9 +28,11 @@ func (stubCommunityRepo) FindByGuildID(ctx context.Context, guildID string) (*co
 	return nil, nil
 }
 
-type stubMemberRepo struct{}
+type stubMemberRepo struct {
+	incrementCalls int
+}
 
-func (stubMemberRepo) UpsertInteraction(
+func (s *stubMemberRepo) UpsertInteraction(
 	ctx context.Context,
 	input communitycore.MemberUpsertInput,
 ) (communitycore.Member, error) {
@@ -44,19 +46,30 @@ func (stubMemberRepo) UpsertInteraction(
 	}, nil
 }
 
-func (stubMemberRepo) FindByGuildAndUser(ctx context.Context, guildID, userID string) (*communitycore.Member, error) {
+func (s *stubMemberRepo) IncrementInteractionCount(
+	ctx context.Context,
+	guildID string,
+	userID string,
+	interactedAt time.Time,
+) error {
+	s.incrementCalls++
+	return nil
+}
+
+func (s *stubMemberRepo) FindByGuildAndUser(ctx context.Context, guildID, userID string) (*communitycore.Member, error) {
 	return nil, nil
 }
 
 func TestCommunityContextAdapterSuccess(t *testing.T) {
-	uc, err := communityapp.NewSyncContextUseCase(stubCommunityRepo{}, stubMemberRepo{})
+	memberRepo := &stubMemberRepo{}
+	uc, err := communityapp.NewSyncContextUseCase(stubCommunityRepo{}, memberRepo)
 	if err != nil {
 		t.Fatalf("NewSyncContextUseCase() error = %v", err)
 	}
 
 	adapter := NewCommunityContextAdapter(uc)
 
-	got, err := adapter.SyncMentionContext(context.Background(), conversationcore.MentionEvent{
+	event := conversationcore.MentionEvent{
 		GuildID:         "guild-1",
 		GuildName:       "Dev Club",
 		ChannelID:       "ch-1",
@@ -66,7 +79,9 @@ func TestCommunityContextAdapterSuccess(t *testing.T) {
 		UserNickname:    "Ali",
 		Content:         "hi",
 		MentionedAt:     time.Now().UTC(),
-	})
+	}
+
+	got, err := adapter.SyncMentionContext(context.Background(), event)
 	if err != nil {
 		t.Fatalf("SyncMentionContext() error = %v", err)
 	}
@@ -76,6 +91,18 @@ func TestCommunityContextAdapterSuccess(t *testing.T) {
 		got.MemberNickname != "Ali" ||
 		got.InteractionCount != 2 {
 		t.Fatalf("unexpected CommunityContext: %+v", got)
+	}
+
+	if memberRepo.incrementCalls != 0 {
+		t.Fatalf("SyncMentionContext must not increment count, got %d", memberRepo.incrementCalls)
+	}
+
+	if err := adapter.RecordInteraction(context.Background(), event); err != nil {
+		t.Fatalf("RecordInteraction() error = %v", err)
+	}
+
+	if memberRepo.incrementCalls != 1 {
+		t.Fatalf("RecordInteraction calls = %d, want 1", memberRepo.incrementCalls)
 	}
 }
 

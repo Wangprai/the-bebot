@@ -1120,10 +1120,12 @@ func TestHandleMentionContinuesOnMoodError(t *testing.T) {
 }
 
 type mockCommunitySyncer struct {
-	community core.CommunityContext
-	err       error
-	called    bool
-	event     core.MentionEvent
+	community    core.CommunityContext
+	err          error
+	recordErr    error
+	called       bool
+	recordCalled bool
+	event        core.MentionEvent
 }
 
 func (m *mockCommunitySyncer) SyncMentionContext(
@@ -1133,6 +1135,14 @@ func (m *mockCommunitySyncer) SyncMentionContext(
 	m.called = true
 	m.event = event
 	return m.community, m.err
+}
+
+func (m *mockCommunitySyncer) RecordInteraction(
+	ctx context.Context,
+	event core.MentionEvent,
+) error {
+	m.recordCalled = true
+	return m.recordErr
 }
 
 func TestHandleMentionInjectsCommunityContext(t *testing.T) {
@@ -1178,6 +1188,43 @@ func TestHandleMentionInjectsCommunityContext(t *testing.T) {
 	if !sender.called {
 		t.Error("expected MessageSender to be called")
 	}
+
+	if !syncer.recordCalled {
+		t.Error("expected RecordInteraction to be called after successful send")
+	}
+}
+
+func TestHandleMentionDoesNotIncrementInteractionOnSendOrGenerateFailure(t *testing.T) {
+	t.Run("send failure does not record interaction", func(t *testing.T) {
+		useCase, _, _, _, sender, event := newTestUseCase()
+		syncer := &mockCommunitySyncer{}
+		_ = useCase.SetCommunityContextSyncer(syncer)
+		sender.err = errors.New("discord send failed")
+
+		if err := useCase.HandleMention(context.Background(), event); err == nil {
+			t.Fatal("expected send error")
+		}
+		if !syncer.called {
+			t.Error("expected SyncMentionContext touch at start")
+		}
+		if syncer.recordCalled {
+			t.Error("RecordInteraction must NOT be called when Send fails")
+		}
+	})
+
+	t.Run("generate failure does not record interaction", func(t *testing.T) {
+		useCase, _, _, generator, _, event := newTestUseCase()
+		syncer := &mockCommunitySyncer{}
+		_ = useCase.SetCommunityContextSyncer(syncer)
+		generator.err = errors.New("llm failed")
+
+		if err := useCase.HandleMention(context.Background(), event); err == nil {
+			t.Fatal("expected generate error")
+		}
+		if syncer.recordCalled {
+			t.Error("RecordInteraction must NOT be called when Generate fails")
+		}
+	})
 }
 
 func TestHandleMentionContinuesOnCommunitySyncError(t *testing.T) {
