@@ -134,6 +134,10 @@ func (uc *CreateCandidateUseCase) Execute(
 	}
 
 	if err := uc.repository.Create(ctx, candidate); err != nil {
+		if errors.Is(err, core.ErrCandidateAlreadyExists) {
+			return false, nil
+		}
+
 		return false, fmt.Errorf("save memory candidate: %w", err)
 	}
 

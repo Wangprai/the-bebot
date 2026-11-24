@@ -70,7 +70,10 @@ func (c *DiscordClient) FetchRecentMessages(
 		}
 
 		// Only accept messages belonging to the requested scope.
-		if discordMessage.GuildID != guildID ||
+		// Discord REST ChannelMessages omits guild_id on returned messages,
+		// so accept empty GuildID and assign the known guildID while still
+		// rejecting any non-empty mismatched guild ID.
+		if (discordMessage.GuildID != "" && discordMessage.GuildID != guildID) ||
 			discordMessage.ChannelID != channelID {
 			continue
 		}
@@ -80,9 +83,14 @@ func (c *DiscordClient) FetchRecentMessages(
 			continue
 		}
 
+		messageGuildID := discordMessage.GuildID
+		if messageGuildID == "" {
+			messageGuildID = guildID
+		}
+
 		messages = append(messages, core.Message{
 			ID:        discordMessage.ID,
-			GuildID:   discordMessage.GuildID,
+			GuildID:   messageGuildID,
 			ChannelID: discordMessage.ChannelID,
 			UserID:    discordMessage.Author.ID,
 			Content:   discordMessage.Content,
@@ -138,10 +146,20 @@ func (c *DiscordClient) Send(
 		)
 	}
 
+	messageGuildID := discordMessage.GuildID
+	if messageGuildID == "" {
+		messageGuildID = guildID
+	}
+
+	messageChannelID := discordMessage.ChannelID
+	if messageChannelID == "" {
+		messageChannelID = channelID
+	}
+
 	return core.Message{
 		ID:        discordMessage.ID,
-		GuildID:   discordMessage.GuildID,
-		ChannelID: discordMessage.ChannelID,
+		GuildID:   messageGuildID,
+		ChannelID: messageChannelID,
 		UserID:    discordMessage.Author.ID,
 		Content:   discordMessage.Content,
 		CreatedAt: discordMessage.Timestamp,

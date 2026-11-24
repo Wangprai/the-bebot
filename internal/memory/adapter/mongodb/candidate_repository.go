@@ -15,7 +15,7 @@ import (
 
 var (
 	ErrCandidateNotFound      = errors.New("memory candidate not found")
-	ErrCandidateAlreadyExists = errors.New("memory candidate already exists")
+	ErrCandidateAlreadyExists = core.ErrCandidateAlreadyExists
 	ErrInvalidCandidateID     = errors.New("invalid memory candidate ID")
 	ErrCandidateOwnershipLost = errors.New("memory candidate ownership lost")
 )

@@ -264,8 +264,8 @@ func (g *Gateway) handleMessageCreate(
 		return
 	}
 
-	// Ignore messages sent by The Bebot itself.
-	if message.Author.ID == botUserID {
+	// Ignore messages sent by The Bebot itself or any other bot to avoid loops.
+	if message.Author.ID == botUserID || message.Author.Bot {
 		return
 	}
 

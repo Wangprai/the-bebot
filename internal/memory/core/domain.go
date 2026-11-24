@@ -21,6 +21,7 @@ var (
 	ErrInvalidCandidateLock       = errors.New("invalid candidate lock")
 	ErrInvalidCandidateRetry      = errors.New("candidate is not ready for retry")
 	ErrInvalidCandidateTransition = errors.New("invalid candidate state transition")
+	ErrCandidateAlreadyExists     = errors.New("memory candidate already exists")
 )
 
 type MemoryType string

@@ -39,7 +39,8 @@ Expected JSON format:
     "content": "Likes Go programming",
     "importance": 3,
     "confidence": 0.95,
-    "tags": ["go", "programming"]
+    "tags": ["go", "programming"],
+    "source_message_id": "message-001"
   }
 ]
 

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"the-bebot/internal/conversation/core"
-	memoryapp "the-bebot/internal/memory/app"
 )
 
 var ErrEmptyResponse = errors.New("response generator returned empty response")
@@ -20,7 +19,7 @@ type HandleMentionUseCase struct {
 	responseGenerator   core.ResponseGenerator
 	messageSender       core.MessageSender
 	candidateCreator    core.CandidateCreator
-	retrieveMemories    *memoryapp.RetrieveMemoriesUseCase
+	memoryRetriever     core.MemoryRetriever
 
 	maxMessages int
 	contextTTL  time.Duration
@@ -32,7 +31,7 @@ func NewHandleMentionUseCase(
 	responseGenerator core.ResponseGenerator,
 	messageSender core.MessageSender,
 	candidateCreator core.CandidateCreator,
-	retrieveMemories *memoryapp.RetrieveMemoriesUseCase,
+	memoryRetriever core.MemoryRetriever,
 	maxMessages int,
 	contextTTL time.Duration,
 ) *HandleMentionUseCase {
@@ -42,7 +41,7 @@ func NewHandleMentionUseCase(
 		responseGenerator:   responseGenerator,
 		messageSender:       messageSender,
 		candidateCreator:    candidateCreator,
-		retrieveMemories:    retrieveMemories,
+		memoryRetriever:     memoryRetriever,
 		maxMessages:         maxMessages,
 		contextTTL:          contextTTL,
 	}
@@ -97,34 +96,18 @@ func (uc *HandleMentionUseCase) HandleMention(
 		return fmt.Errorf("build conversation context: %w", err)
 	}
 
-	if uc.retrieveMemories != nil {
-		memories, err := uc.retrieveMemories.Execute(
+	if uc.memoryRetriever != nil {
+		memories, err := uc.memoryRetriever.RetrieveMemories(
 			ctx,
-			memoryapp.RetrieveMemoriesInput{
-				GuildID: event.GuildID,
-				UserID:  event.UserID,
-				Limit:   5,
-			},
+			event.GuildID,
+			event.UserID,
+			5,
 		)
 		if err != nil {
 			return fmt.Errorf("retrieve memories: %w", err)
 		}
 
-		conversationMemories := make([]core.MemoryContext, 0, len(memories))
-
-		for _, memory := range memories {
-			conversationMemories = append(
-				conversationMemories,
-				core.MemoryContext{
-					Scope:      string(memory.Scope),
-					Type:       string(memory.Type),
-					Content:    memory.Content,
-					Importance: memory.Importance,
-				},
-			)
-		}
-
-		conversationContext.Memories = conversationMemories
+		conversationContext.Memories = memories
 	}
 
 	// Generate AI response.

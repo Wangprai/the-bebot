@@ -281,3 +281,77 @@ func TestConversationPipelineRejectsEmptyLLMResponse(t *testing.T) {
 		t.Error("MessageSender should not be called")
 	}
 }
+
+func TestConversationPipelineWithMemoryRetrieval(t *testing.T) {
+	now := time.Now().UTC()
+
+	event := core.MentionEvent{
+		GuildID:     "guild-001",
+		ChannelID:   "channel-001",
+		MessageID:   "message-002",
+		UserID:      "user-001",
+		Content:     "@TheBebot what language do I like?",
+		MentionedAt: now,
+	}
+
+	provider := &mockContextProvider{
+		messages: []core.Message{
+			{
+				ID:        "message-001",
+				GuildID:   event.GuildID,
+				ChannelID: event.ChannelID,
+				UserID:    event.UserID,
+				Content:   "Hi there",
+				CreatedAt: now.Add(-time.Minute),
+			},
+		},
+	}
+
+	retriever := &mockMemoryRetriever{
+		memories: []core.MemoryContext{
+			{
+				Scope:      "member",
+				Type:       "preference",
+				Content:    "Likes Go programming",
+				Importance: 4,
+			},
+		},
+	}
+
+	generator := &mockResponseGenerator{
+		response: "You obviously love Go!",
+	}
+	sender := &mockMessageSender{}
+	candidateCreator := &mockCandidateCreator{}
+
+	useCase := NewHandleMentionUseCase(
+		provider,
+		core.NewConversationService(),
+		generator,
+		sender,
+		candidateCreator,
+		retriever,
+		15,
+		24*time.Hour,
+	)
+
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("HandleMention() error = %v", err)
+	}
+
+	if !retriever.called {
+		t.Fatal("expected MemoryRetriever to be called")
+	}
+
+	if len(generator.receivedContext.Memories) != 1 {
+		t.Fatalf("expected 1 memory in context, got %d", len(generator.receivedContext.Memories))
+	}
+
+	if generator.receivedContext.Memories[0].Content != "Likes Go programming" {
+		t.Errorf("unexpected memory content: %q", generator.receivedContext.Memories[0].Content)
+	}
+
+	if !candidateCreator.called {
+		t.Error("expected CandidateCreator to be called")
+	}
+}

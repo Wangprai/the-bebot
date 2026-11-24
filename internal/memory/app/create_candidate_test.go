@@ -260,6 +260,36 @@ func TestCreateCandidateRepositoryError(t *testing.T) {
 	}
 }
 
+func TestCreateCandidateDuplicateIsIdempotent(t *testing.T) {
+	repository := &mockCandidateRepository{
+		createErr: core.ErrCandidateAlreadyExists,
+	}
+
+	evaluator := &mockCandidateRuleEvaluator{
+		shouldCreate: true,
+	}
+
+	useCase := NewCreateCandidateUseCase(
+		repository,
+		evaluator,
+		24*time.Hour,
+	)
+
+	created, err := useCase.Execute(
+		context.Background(),
+		CreateCandidateInput{
+			Snapshot: newTestConversationSnapshot(),
+		},
+	)
+	if err != nil {
+		t.Fatalf("expected nil error for duplicate candidate, got %v", err)
+	}
+
+	if created {
+		t.Fatal("expected created = false for duplicate candidate")
+	}
+}
+
 func TestCreateCandidateCanceledContext(t *testing.T) {
 	repository := &mockCandidateRepository{}
 	evaluator := &mockCandidateRuleEvaluator{

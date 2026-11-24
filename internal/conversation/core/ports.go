@@ -58,3 +58,13 @@ type CandidateCreator interface {
 		conversationContext ConversationContext,
 	) error
 }
+
+// MemoryRetriever retrieves relevant long-term memories for conversation context.
+type MemoryRetriever interface {
+	RetrieveMemories(
+		ctx context.Context,
+		guildID string,
+		userID string,
+		limit int,
+	) ([]MemoryContext, error)
+}

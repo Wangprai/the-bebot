@@ -215,6 +215,19 @@ func TestCandidateCreatorAdapterReturnsRepositoryError(t *testing.T) {
 	}
 }
 
+func TestCandidateCreatorAdapterTreatsDuplicateCandidateAsIdempotent(t *testing.T) {
+	adapter, repository, _ := newTestCandidateCreator(true)
+	repository.err = memorycore.ErrCandidateAlreadyExists
+
+	err := adapter.CreateCandidate(
+		context.Background(),
+		newTestConversationContext(),
+	)
+	if err != nil {
+		t.Fatalf("expected nil error for duplicate candidate, got %v", err)
+	}
+}
+
 func TestCandidateCreatorAdapterRejectsNilAdapter(t *testing.T) {
 	var adapter *CandidateCreatorAdapter
 

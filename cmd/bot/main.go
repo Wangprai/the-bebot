@@ -136,9 +136,9 @@ func run() error {
 		return fmt.Errorf("initialize Discord client: %w", err)
 	}
 
-	// Initialize Candidate Creator
+	// Initialize Candidate Creator and Memory Retriever
 	var candidateCreator core.CandidateCreator = app.NoopCandidateCreator{}
-	var retrieveMemories *memoryapp.RetrieveMemoriesUseCase
+	var memoryRetriever core.MemoryRetriever
 
 	if cfg.Memory.Enabled {
 		// Initialize Memory Repository
@@ -150,8 +150,11 @@ func run() error {
 		}
 
 		// Initialize Retrieve Memories Use Case
-		retrieveMemories = memoryapp.NewRetrieveMemoriesUseCase(
+		retrieveMemories := memoryapp.NewRetrieveMemoriesUseCase(
 			memoryRepository,
+		)
+		memoryRetriever = memoryadapter.NewMemoryRetrieverAdapter(
+			retrieveMemories,
 		)
 
 		// Initialize Candidate Repository
@@ -285,7 +288,7 @@ func run() error {
 		llmClient,
 		discordClient,
 		candidateCreator,
-		retrieveMemories,
+		memoryRetriever,
 		cfg.Conversation.MaxMessages,
 		conversationContextTTL,
 	)

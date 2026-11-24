@@ -85,7 +85,8 @@ func TestMemoryExtractorSuccess(t *testing.T) {
 			"content": "ชอบเขียนโปรแกรมด้วย Go",
 			"importance": 3,
 			"confidence": 0.95,
-			"tags": ["go", "programming"]
+			"tags": ["go", "programming"],
+			"source_message_id": "message-001"
 		}
 	]`
 
@@ -117,6 +118,10 @@ func TestMemoryExtractorSuccess(t *testing.T) {
 
 		if request.Messages[0].Role != "system" {
 			t.Errorf("first role = %s, want system", request.Messages[0].Role)
+		}
+
+		if !strings.Contains(request.Messages[0].Content, `"source_message_id"`) {
+			t.Error("extraction system prompt JSON example must include source_message_id")
 		}
 
 		if request.Messages[1].Role != "user" {
@@ -176,6 +181,10 @@ func TestMemoryExtractorSuccess(t *testing.T) {
 
 	if len(memory.Tags) != 2 {
 		t.Errorf("tags count = %d, want 2", len(memory.Tags))
+	}
+
+	if memory.SourceMessageID != "message-001" {
+		t.Errorf("source_message_id = %q, want message-001", memory.SourceMessageID)
 	}
 }
 

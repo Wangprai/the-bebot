@@ -349,3 +349,94 @@ func (m *mockCandidateCreator) CreateCandidate(
 	m.called = true
 	return m.err
 }
+
+type mockMemoryRetriever struct {
+	memories []core.MemoryContext
+	err      error
+	called   bool
+
+	receivedGuildID string
+	receivedUserID  string
+	receivedLimit   int
+}
+
+func (m *mockMemoryRetriever) RetrieveMemories(
+	ctx context.Context,
+	guildID string,
+	userID string,
+	limit int,
+) ([]core.MemoryContext, error) {
+	m.called = true
+	m.receivedGuildID = guildID
+	m.receivedUserID = userID
+	m.receivedLimit = limit
+	return m.memories, m.err
+}
+
+func TestHandleMentionInjectsRetrievedMemories(t *testing.T) {
+	useCase, _, _, generator, sender, event := newTestUseCase()
+
+	retriever := &mockMemoryRetriever{
+		memories: []core.MemoryContext{
+			{
+				Scope:      "member",
+				Type:       "preference",
+				Content:    "Likes Go",
+				Importance: 4,
+			},
+		},
+	}
+
+	useCase.memoryRetriever = retriever
+
+	err := useCase.HandleMention(context.Background(), event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !retriever.called {
+		t.Fatal("expected MemoryRetriever to be called")
+	}
+
+	if retriever.receivedGuildID != event.GuildID ||
+		retriever.receivedUserID != event.UserID ||
+		retriever.receivedLimit != 5 {
+		t.Errorf(
+			"unexpected retriever params: guild=%s user=%s limit=%d",
+			retriever.receivedGuildID,
+			retriever.receivedUserID,
+			retriever.receivedLimit,
+		)
+	}
+
+	if len(generator.receivedContext.Memories) != 1 ||
+		generator.receivedContext.Memories[0].Content != "Likes Go" {
+		t.Fatalf("expected retrieved memories in LLM context, got %+v", generator.receivedContext.Memories)
+	}
+
+	if !sender.called {
+		t.Error("expected MessageSender to be called")
+	}
+}
+
+func TestHandleMentionMemoryRetrievalErrorStopsPipeline(t *testing.T) {
+	useCase, _, _, generator, sender, event := newTestUseCase()
+
+	expectedErr := errors.New("memory store unavailable")
+	useCase.memoryRetriever = &mockMemoryRetriever{
+		err: expectedErr,
+	}
+
+	err := useCase.HandleMention(context.Background(), event)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected error %v, got %v", expectedErr, err)
+	}
+
+	if generator.called {
+		t.Error("ResponseGenerator should not be called when memory retrieval fails")
+	}
+
+	if sender.called {
+		t.Error("MessageSender should not be called when memory retrieval fails")
+	}
+}

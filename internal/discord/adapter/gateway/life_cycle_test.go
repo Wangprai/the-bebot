@@ -179,3 +179,93 @@ func TestCloseWaitsForInFlightHandler(t *testing.T) {
 	default:
 	}
 }
+
+type recordingMentionHandler struct {
+	called int
+}
+
+func (h *recordingMentionHandler) HandleMention(
+	ctx context.Context,
+	event core.MentionEvent,
+) error {
+	h.called++
+	return nil
+}
+
+func TestHandleMessageCreateIgnoresBotAuthors(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := &recordingMentionHandler{}
+
+	g, err := NewGateway("test-token", logger, handler)
+	if err != nil {
+		t.Fatalf("NewGateway() error = %v", err)
+	}
+	defer g.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	g.mu.Lock()
+	g.ctx = ctx
+	g.cancel = cancel
+	g.started = true
+	g.botUserID = "bebot-001"
+	g.mu.Unlock()
+
+	tests := []struct {
+		name           string
+		author         *discordgo.User
+		expectedCalled int
+	}{
+		{
+			name: "ignores another bot mentioning The Bebot",
+			author: &discordgo.User{
+				ID:  "other-bot-999",
+				Bot: true,
+			},
+			expectedCalled: 0,
+		},
+		{
+			name: "ignores The Bebot self message even if Bot flag false",
+			author: &discordgo.User{
+				ID:  "bebot-001",
+				Bot: false,
+			},
+			expectedCalled: 0,
+		},
+		{
+			name: "handles normal human mention",
+			author: &discordgo.User{
+				ID:  "human-001",
+				Bot: false,
+			},
+			expectedCalled: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler.called = 0
+
+			event := &discordgo.MessageCreate{
+				Message: &discordgo.Message{
+					ID:        "message-1",
+					GuildID:   "guild-1",
+					ChannelID: "channel-1",
+					Content:   "<@bebot-001> hello",
+					Timestamp: time.Now(),
+					Author:    tt.author,
+					Mentions: []*discordgo.User{
+						{ID: "bebot-001"},
+					},
+				},
+			}
+
+			g.handleMessageCreate(nil, event)
+
+			if handler.called != tt.expectedCalled {
+				t.Errorf("handler.called = %d, want %d", handler.called, tt.expectedCalled)
+			}
+		})
+	}
+}
