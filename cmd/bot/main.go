@@ -252,11 +252,6 @@ func run() error {
 			return fmt.Errorf("start memory worker: %w", err)
 		}
 
-		appLogger.Info(
-			"Memory worker started",
-			"workers", cfg.Memory.WorkerCount,
-		)
-
 		// Memory Worker cleanup
 		defer func() {
 			shutdownCtx, cancel := context.WithTimeout(
@@ -292,6 +287,16 @@ func run() error {
 		cfg.Conversation.MaxMessages,
 		conversationContextTTL,
 	)
+
+	if err := mentionHandler.SetMaxRetrievedMemories(
+		cfg.Memory.MaxRetrievedMemories,
+	); err != nil {
+		return fmt.Errorf("configure max retrieved memories: %w", err)
+	}
+
+	if err := mentionHandler.SetTimeout(cfg.Conversation.Timeout); err != nil {
+		return fmt.Errorf("configure mention timeout: %w", err)
+	}
 
 	// Inject Mention Handler
 	if err := discordGateway.SetMentionHandler(mentionHandler); err != nil {

@@ -22,6 +22,10 @@ type mockWorkerCandidateRepository struct {
 
 	claimErr  error
 	claimCall int
+
+	deleteErr      error
+	deleteCalls    int
+	deleteCalledCh chan struct{}
 }
 
 func (m *mockWorkerCandidateRepository) Create(
@@ -76,7 +80,20 @@ func (m *mockWorkerCandidateRepository) DeleteExpired(
 	ctx context.Context,
 	before time.Time,
 ) error {
-	return nil
+	m.mu.Lock()
+	m.deleteCalls++
+	err := m.deleteErr
+	ch := m.deleteCalledCh
+	m.mu.Unlock()
+
+	if ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+
+	return err
 }
 
 type mockWorkerProcessor struct {
@@ -489,5 +506,71 @@ func TestMemoryWorkerHandlesClaimError(t *testing.T) {
 
 	if err := worker.Stop(stopCtx); err != nil {
 		t.Fatalf("stop worker: %v", err)
+	}
+}
+
+func TestMemoryWorkerPeriodicDeleteExpiredCleanup(t *testing.T) {
+	repository := &mockWorkerCandidateRepository{
+		deleteCalledCh: make(chan struct{}, 2),
+	}
+
+	worker := newTestMemoryWorker(
+		t,
+		repository,
+		&mockWorkerProcessor{},
+		1,
+	)
+
+	if err := worker.SetCleanupInterval(15 * time.Millisecond); err != nil {
+		t.Fatalf("SetCleanupInterval() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := worker.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	select {
+	case <-repository.deleteCalledCh:
+	case <-time.After(time.Second):
+		t.Fatal("expected periodic DeleteExpired to be invoked")
+	}
+
+	if err := worker.SetCleanupInterval(time.Second); err == nil {
+		t.Error("expected error when setting cleanup interval after start")
+	}
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+	defer stopCancel()
+
+	if err := worker.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+
+	repository.mu.Lock()
+	calls := repository.deleteCalls
+	repository.mu.Unlock()
+
+	if calls < 1 {
+		t.Fatalf("expected at least 1 DeleteExpired call, got %d", calls)
+	}
+}
+
+func TestMemoryWorkerSetCleanupIntervalRejectsNonPositive(t *testing.T) {
+	worker := newTestMemoryWorker(
+		t,
+		&mockWorkerCandidateRepository{},
+		&mockWorkerProcessor{},
+		1,
+	)
+
+	if err := worker.SetCleanupInterval(0); err == nil {
+		t.Fatal("expected error for zero cleanup interval")
+	}
+
+	if err := worker.SetCleanupInterval(-time.Second); err == nil {
+		t.Fatal("expected error for negative cleanup interval")
 	}
 }

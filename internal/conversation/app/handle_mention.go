@@ -11,6 +11,8 @@ import (
 	"the-bebot/internal/conversation/core"
 )
 
+const defaultMaxRetrievedMemories = 5
+
 var ErrEmptyResponse = errors.New("response generator returned empty response")
 
 type HandleMentionUseCase struct {
@@ -21,8 +23,10 @@ type HandleMentionUseCase struct {
 	candidateCreator    core.CandidateCreator
 	memoryRetriever     core.MemoryRetriever
 
-	maxMessages int
-	contextTTL  time.Duration
+	maxMessages          int
+	maxRetrievedMemories int
+	contextTTL           time.Duration
+	mentionTimeout       time.Duration
 }
 
 func NewHandleMentionUseCase(
@@ -36,21 +40,58 @@ func NewHandleMentionUseCase(
 	contextTTL time.Duration,
 ) *HandleMentionUseCase {
 	return &HandleMentionUseCase{
-		contextProvider:     contextProvider,
-		conversationService: conversationService,
-		responseGenerator:   responseGenerator,
-		messageSender:       messageSender,
-		candidateCreator:    candidateCreator,
-		memoryRetriever:     memoryRetriever,
-		maxMessages:         maxMessages,
-		contextTTL:          contextTTL,
+		contextProvider:      contextProvider,
+		conversationService:  conversationService,
+		responseGenerator:    responseGenerator,
+		messageSender:        messageSender,
+		candidateCreator:     candidateCreator,
+		memoryRetriever:      memoryRetriever,
+		maxMessages:          maxMessages,
+		maxRetrievedMemories: defaultMaxRetrievedMemories,
+		contextTTL:           contextTTL,
 	}
+}
+
+func (uc *HandleMentionUseCase) SetMaxRetrievedMemories(limit int) error {
+	if uc == nil {
+		return fmt.Errorf("handle mention use case is nil")
+	}
+
+	if limit <= 0 {
+		return fmt.Errorf("max retrieved memories must be greater than zero")
+	}
+
+	uc.maxRetrievedMemories = limit
+	return nil
+}
+
+func (uc *HandleMentionUseCase) SetTimeout(timeout time.Duration) error {
+	if uc == nil {
+		return fmt.Errorf("handle mention use case is nil")
+	}
+
+	if timeout <= 0 {
+		return fmt.Errorf("mention timeout must be greater than zero")
+	}
+
+	uc.mentionTimeout = timeout
+	return nil
 }
 
 func (uc *HandleMentionUseCase) HandleMention(
 	ctx context.Context,
 	event core.MentionEvent,
 ) error {
+	if ctx == nil {
+		return fmt.Errorf("context is required")
+	}
+
+	if uc.mentionTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, uc.mentionTimeout)
+		defer cancel()
+	}
+
 	// Validate incoming event.
 	if err := event.Validate(); err != nil {
 		return fmt.Errorf("validate mention event: %w", err)
@@ -97,11 +138,16 @@ func (uc *HandleMentionUseCase) HandleMention(
 	}
 
 	if uc.memoryRetriever != nil {
+		limit := uc.maxRetrievedMemories
+		if limit <= 0 {
+			limit = defaultMaxRetrievedMemories
+		}
+
 		memories, err := uc.memoryRetriever.RetrieveMemories(
 			ctx,
 			event.GuildID,
 			event.UserID,
-			5,
+			limit,
 		)
 		if err != nil {
 			return fmt.Errorf("retrieve memories: %w", err)

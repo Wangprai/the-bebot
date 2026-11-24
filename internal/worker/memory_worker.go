@@ -10,6 +10,8 @@ import (
 	"the-bebot/internal/memory/core"
 )
 
+const defaultCleanupInterval = time.Hour
+
 // CandidateProcessor processes a claimed memory candidate.
 type CandidateProcessor interface {
 	Process(
@@ -20,12 +22,13 @@ type CandidateProcessor interface {
 
 // MemoryWorker processes memory candidates in the background.
 type MemoryWorker struct {
-	repository   core.CandidateRepository
-	processor    CandidateProcessor
-	workerCount  int
-	pollInterval time.Duration
-	lockDuration time.Duration
-	logger       *slog.Logger
+	repository      core.CandidateRepository
+	processor       CandidateProcessor
+	workerCount     int
+	pollInterval    time.Duration
+	lockDuration    time.Duration
+	cleanupInterval time.Duration
+	logger          *slog.Logger
 
 	mu      sync.Mutex
 	started bool
@@ -66,13 +69,34 @@ func NewMemoryWorker(
 	}
 
 	return &MemoryWorker{
-		repository:   repository,
-		processor:    processor,
-		workerCount:  workerCount,
-		pollInterval: pollInterval,
-		lockDuration: lockDuration,
-		logger:       logger,
+		repository:      repository,
+		processor:       processor,
+		workerCount:     workerCount,
+		pollInterval:    pollInterval,
+		lockDuration:    lockDuration,
+		cleanupInterval: defaultCleanupInterval,
+		logger:          logger,
 	}, nil
+}
+
+func (w *MemoryWorker) SetCleanupInterval(interval time.Duration) error {
+	if w == nil {
+		return fmt.Errorf("memory worker is nil")
+	}
+
+	if interval <= 0 {
+		return fmt.Errorf("cleanup interval must be greater than zero")
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.started {
+		return fmt.Errorf("cannot set cleanup interval after memory worker started")
+	}
+
+	w.cleanupInterval = interval
+	return nil
 }
 
 func (w *MemoryWorker) Start(ctx context.Context) error {
@@ -109,6 +133,17 @@ func (w *MemoryWorker) Start(ctx context.Context) error {
 			w.run(workerCtx, id)
 		}(workerID)
 	}
+
+	cleanupInterval := w.cleanupInterval
+	if cleanupInterval <= 0 {
+		cleanupInterval = defaultCleanupInterval
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		w.runCleanup(workerCtx, cleanupInterval)
+	}()
 
 	go func() {
 		wg.Wait()
@@ -217,6 +252,28 @@ func (w *MemoryWorker) run(
 				"Failed to process memory candidate",
 				"worker_id", workerID,
 				"candidate_id", candidate.ID,
+				"error", err,
+			)
+		}
+	}
+}
+
+func (w *MemoryWorker) runCleanup(
+	ctx context.Context,
+	interval time.Duration,
+) {
+	for {
+		if !w.wait(ctx, interval) {
+			return
+		}
+
+		if err := w.repository.DeleteExpired(ctx, time.Now().UTC()); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+
+			w.logger.Error(
+				"Failed to delete expired memory candidates",
 				"error", err,
 			)
 		}

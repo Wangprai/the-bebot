@@ -268,6 +268,7 @@ func TestMemoryRepositoryEnsureIndexes(t *testing.T) {
 		"_id_",
 		"idx_memories_community_relevance",
 		"idx_memories_member_relevance",
+		"idx_memories_idempotency",
 	}
 
 	for _, name := range expected {

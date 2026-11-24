@@ -95,6 +95,7 @@ func (uc *ExtractMemoriesUseCase) Execute(
 	}
 
 	memories := make([]core.Memory, 0, len(extractedMemories))
+	var validationErrs []error
 
 	for i, extracted := range extractedMemories {
 		if err := ctx.Err(); err != nil {
@@ -107,23 +108,29 @@ func (uc *ExtractMemoriesUseCase) Execute(
 			targetUserID,
 		)
 		if err != nil {
-			return nil, fmt.Errorf(
+			validationErrs = append(validationErrs, fmt.Errorf(
 				"validate extracted memory %d: %w",
 				i,
 				err,
-			)
+			))
+			continue
 		}
 
 		memory, err := uc.validator.Validate(extracted, source)
 		if err != nil {
-			return nil, fmt.Errorf(
+			validationErrs = append(validationErrs, fmt.Errorf(
 				"validate extracted memory %d: %w",
 				i,
 				err,
-			)
+			))
+			continue
 		}
 
 		memories = append(memories, memory)
+	}
+
+	if len(memories) == 0 && len(validationErrs) > 0 {
+		return nil, errors.Join(validationErrs...)
 	}
 
 	return memories, nil

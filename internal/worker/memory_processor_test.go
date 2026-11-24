@@ -757,3 +757,61 @@ func TestMemoryCandidateProcessorOwnershipLost(t *testing.T) {
 		)
 	}
 }
+
+func TestMemoryCandidateProcessorMixedValidAndInvalidBatchCompletes(t *testing.T) {
+	invalidItem := core.ExtractedMemory{
+		Scope:           core.MemoryScopeMember,
+		Type:            core.MemoryTypePreference,
+		Content:         "My password is secret123",
+		Importance:      3,
+		Confidence:      0.9,
+		SourceMessageID: "message-123",
+	}
+
+	validItem := core.ExtractedMemory{
+		Scope:           core.MemoryScopeMember,
+		Type:            core.MemoryTypePreference,
+		Content:         "User likes Go programming",
+		Importance:      3,
+		Confidence:      0.9,
+		SourceMessageID: "message-123",
+	}
+
+	extractionUseCase := memoryapp.NewExtractMemoriesUseCase(
+		&mockCandidateRules{shouldCreate: true},
+		&mockMemoryExtractor{
+			memories: []core.ExtractedMemory{invalidItem, validItem},
+		},
+		memoryapp.NewMemoryValidator(),
+	)
+
+	memoryRepo := &mockProcessorMemoryRepository{}
+	candidateRepo := &mockProcessorCandidateRepository{}
+
+	processor, err := NewMemoryCandidateProcessor(
+		extractionUseCase,
+		memoryRepo,
+		candidateRepo,
+		core.NewCandidateService(),
+	)
+	if err != nil {
+		t.Fatalf("create processor: %v", err)
+	}
+
+	if err := processor.Process(context.Background(), newProcessorTestCandidate(t)); err != nil {
+		t.Fatalf("expected mixed batch to complete without error, got %v", err)
+	}
+
+	if len(memoryRepo.saved) != 1 {
+		t.Fatalf("expected 1 valid memory saved, got %d", len(memoryRepo.saved))
+	}
+
+	if memoryRepo.saved[0].Content != "User likes Go programming" {
+		t.Errorf("unexpected saved content: %q", memoryRepo.saved[0].Content)
+	}
+
+	if len(candidateRepo.updated) != 1 ||
+		candidateRepo.updated[0].Status != core.CandidateStatusCompleted {
+		t.Fatalf("expected candidate to be marked completed, got %+v", candidateRepo.updated)
+	}
+}

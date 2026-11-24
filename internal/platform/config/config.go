@@ -45,10 +45,9 @@ type ConversationConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled       bool
-	MaxCandidates int
-	WorkerCount   int
-	QueueSize     int
+	Enabled              bool
+	MaxRetrievedMemories int
+	WorkerCount          int
 }
 
 func Load() (*Config, error) {
@@ -58,6 +57,10 @@ func Load() (*Config, error) {
 		}
 	}
 
+	return LoadFromEnv()
+}
+
+func LoadFromEnv() (*Config, error) {
 	cfg := &Config{
 		AppName: getEnv("APP_NAME", "the-bebot"),
 		AppEnv:  getEnv("APP_ENV", "development"),
@@ -84,10 +87,9 @@ func Load() (*Config, error) {
 		},
 
 		Memory: MemoryConfig{
-			Enabled:       true,
-			MaxCandidates: 5,
-			WorkerCount:   2,
-			QueueSize:     100,
+			Enabled:              true,
+			MaxRetrievedMemories: 5,
+			WorkerCount:          2,
 		},
 
 		LogLevel: getEnv("LOG_LEVEL", "debug"),
@@ -113,8 +115,8 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	if cfg.Memory.MaxCandidates, err = getInt(
-		"MEMORY_MAX_CANDIDATES", cfg.Memory.MaxCandidates,
+	if cfg.Memory.MaxRetrievedMemories, err = getInt(
+		"MEMORY_MAX_RETRIEVED_MEMORIES", cfg.Memory.MaxRetrievedMemories,
 	); err != nil {
 		return nil, err
 	}
@@ -125,13 +127,35 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	if cfg.Memory.QueueSize, err = getInt(
-		"MEMORY_QUEUE_SIZE", cfg.Memory.QueueSize,
-	); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+func (c *Config) Validate() error {
+	if c == nil {
+		return errors.New("config is required")
+	}
+
+	if c.Conversation.Timeout <= 0 {
+		return errors.New("CONVERSATION_TIMEOUT must be greater than zero")
+	}
+
+	if c.Conversation.MaxMessages <= 0 {
+		return errors.New("MAX_CONTEXT_MESSAGES must be greater than zero")
+	}
+
+	if c.Memory.MaxRetrievedMemories <= 0 {
+		return errors.New("MEMORY_MAX_RETRIEVED_MEMORIES must be greater than zero")
+	}
+
+	if c.Memory.WorkerCount <= 0 {
+		return errors.New("MEMORY_WORKER_COUNT must be greater than zero")
+	}
+
+	return nil
 }
 
 func getEnv(key, fallback string) string {

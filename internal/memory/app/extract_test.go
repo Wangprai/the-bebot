@@ -437,3 +437,62 @@ func TestExtractMemoriesRejectsCanceledContext(t *testing.T) {
 		t.Error("pipeline should stop after context cancellation")
 	}
 }
+
+func TestExtractMemoriesKeepsValidSiblingsWhenOneItemHasInvalidSource(t *testing.T) {
+	rules := &mockExtractionRules{shouldExtract: true}
+
+	invalidItem := newValidExtractedMemory()
+	invalidItem.SourceMessageID = "message-002" // wrong user for member scope
+
+	validItem := newValidExtractedMemory()
+
+	extractor := &mockMemoryExtractor{
+		memories: []core.ExtractedMemory{invalidItem, validItem},
+	}
+
+	validator := NewMemoryValidator()
+	uc := NewExtractMemoriesUseCase(rules, extractor, validator)
+
+	memories, err := uc.Execute(context.Background(), newValidExtractionRequest())
+	if err != nil {
+		t.Fatalf("expected valid sibling memories to succeed, got error: %v", err)
+	}
+
+	if len(memories) != 1 {
+		t.Fatalf("expected 1 valid memory, got %d", len(memories))
+	}
+
+	if memories[0].Content != validItem.Content {
+		t.Errorf("content = %q, want %q", memories[0].Content, validItem.Content)
+	}
+}
+
+func TestExtractMemoriesKeepsValidSiblingsWhenOneItemIsSensitive(t *testing.T) {
+	rules := &mockExtractionRules{shouldExtract: true}
+
+	sensitiveItem := newValidExtractedMemory()
+	sensitiveItem.Content = "My password is secret123"
+
+	validItem := newValidExtractedMemory()
+	validItem.Content = "Likes Go programming"
+
+	extractor := &mockMemoryExtractor{
+		memories: []core.ExtractedMemory{sensitiveItem, validItem},
+	}
+
+	validator := NewMemoryValidator()
+	uc := NewExtractMemoriesUseCase(rules, extractor, validator)
+
+	memories, err := uc.Execute(context.Background(), newValidExtractionRequest())
+	if err != nil {
+		t.Fatalf("expected valid sibling memory to be preserved, got error: %v", err)
+	}
+
+	if len(memories) != 1 {
+		t.Fatalf("expected 1 valid memory, got %d", len(memories))
+	}
+
+	if memories[0].Content != "Likes Go programming" {
+		t.Errorf("unexpected content: %q", memories[0].Content)
+	}
+}

@@ -440,3 +440,64 @@ func TestHandleMentionMemoryRetrievalErrorStopsPipeline(t *testing.T) {
 		t.Error("MessageSender should not be called when memory retrieval fails")
 	}
 }
+
+func TestHandleMentionUsesConfiguredMaxRetrievedMemories(t *testing.T) {
+	useCase, _, _, _, _, event := newTestUseCase()
+
+	retriever := &mockMemoryRetriever{}
+	useCase.memoryRetriever = retriever
+
+	if err := useCase.SetMaxRetrievedMemories(0); err == nil {
+		t.Fatal("expected error for non-positive retrieval limit")
+	}
+
+	if err := useCase.SetMaxRetrievedMemories(8); err != nil {
+		t.Fatalf("SetMaxRetrievedMemories() error = %v", err)
+	}
+
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("HandleMention() error = %v", err)
+	}
+
+	if retriever.receivedLimit != 8 {
+		t.Errorf("receivedLimit = %d, want 8", retriever.receivedLimit)
+	}
+}
+
+type blockingResponseGenerator struct {
+	delay time.Duration
+}
+
+func (g *blockingResponseGenerator) Generate(
+	ctx context.Context,
+	conversationContext core.ConversationContext,
+) (string, error) {
+	select {
+	case <-time.After(g.delay):
+		return "too late", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func TestHandleMentionEnforcesTimeout(t *testing.T) {
+	useCase, _, _, _, sender, event := newTestUseCase()
+	useCase.responseGenerator = &blockingResponseGenerator{delay: 500 * time.Millisecond}
+
+	if err := useCase.SetTimeout(0); err == nil {
+		t.Fatal("expected error for non-positive timeout")
+	}
+
+	if err := useCase.SetTimeout(20 * time.Millisecond); err != nil {
+		t.Fatalf("SetTimeout() error = %v", err)
+	}
+
+	err := useCase.HandleMention(context.Background(), event)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+
+	if sender.called {
+		t.Error("MessageSender should not be called after timeout")
+	}
+}
