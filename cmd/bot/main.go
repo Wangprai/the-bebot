@@ -109,10 +109,11 @@ func run() error {
 
 	// Initialize LLM Client
 	llmClient, err := llm.NewClient(llm.Config{
-		Endpoint: cfg.LLM.BaseURL,
-		APIKey:   cfg.LLM.APIKey,
-		Model:    cfg.LLM.Model,
-		Timeout:  cfg.Conversation.Timeout,
+		Endpoint:  cfg.LLM.BaseURL,
+		APIKey:    cfg.LLM.APIKey,
+		Model:     cfg.LLM.Model,
+		Timeout:   cfg.Conversation.Timeout,
+		MaxTokens: cfg.LLM.MaxTokens,
 	})
 	if err != nil {
 		return fmt.Errorf("initialize LLM client: %w", err)

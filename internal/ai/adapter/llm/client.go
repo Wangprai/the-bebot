@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,8 +23,12 @@ var (
 )
 
 const (
-	defaultTimeout  = 30 * time.Second
-	maxResponseSize = 1 << 20 // 1 MB
+	defaultTimeout     = 30 * time.Second
+	defaultMaxTokens   = 600
+	defaultMaxAttempts = 3
+	defaultBaseBackoff = 200 * time.Millisecond
+	maxResponseSize    = 1 << 20 // 1 MB
+	maxErrorBodyRunes  = 200
 )
 
 const defaultSystemPrompt = `
@@ -46,6 +52,7 @@ type Config struct {
 	Model        string
 	SystemPrompt string
 	Timeout      time.Duration
+	MaxTokens    int
 }
 
 type Client struct {
@@ -53,7 +60,14 @@ type Client struct {
 	apiKey       string
 	model        string
 	systemPrompt string
+	maxTokens    int
 	httpClient   *http.Client
+
+	maxAttempts int
+	baseBackoff time.Duration
+	jitterFn    func(time.Duration) time.Duration
+	sleepFn     func(context.Context, time.Duration) error
+	clock       func() time.Time
 }
 
 var _ core.ResponseGenerator = (*Client)(nil)
@@ -85,6 +99,13 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("LLM model is required")
 	}
 
+	if cfg.MaxTokens < 0 {
+		return nil, fmt.Errorf("LLM max tokens must not be negative")
+	}
+	if cfg.MaxTokens == 0 {
+		cfg.MaxTokens = defaultMaxTokens
+	}
+
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaultTimeout
 	}
@@ -98,9 +119,15 @@ func NewClient(cfg Config) (*Client, error) {
 		apiKey:       cfg.APIKey,
 		model:        cfg.Model,
 		systemPrompt: strings.TrimSpace(cfg.SystemPrompt),
+		maxTokens:    cfg.MaxTokens,
 		httpClient: &http.Client{
 			Timeout: cfg.Timeout,
 		},
+		maxAttempts: defaultMaxAttempts,
+		baseBackoff: defaultBaseBackoff,
+		jitterFn:    applyJitter,
+		sleepFn:     sleepWithContext,
+		clock:       time.Now,
 	}, nil
 }
 
@@ -508,9 +535,15 @@ func (c *Client) complete(
 	ctx context.Context,
 	messages []chatMessage,
 ) (string, error) {
+	maxTokens := c.maxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultMaxTokens
+	}
+
 	requestBody := chatRequest{
-		Model:    c.model,
-		Messages: messages,
+		Model:     c.model,
+		Messages:  messages,
+		MaxTokens: maxTokens,
 	}
 
 	payload, err := json.Marshal(requestBody)
@@ -518,61 +551,211 @@ func (c *Client) complete(
 		return "", fmt.Errorf("marshal LLM request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		c.endpoint,
-		bytes.NewReader(payload),
-	)
-	if err != nil {
-		return "", fmt.Errorf("create LLM request: %w", err)
+	maxAttempts := c.maxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultMaxAttempts
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("send LLM request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(
-		io.LimitReader(resp.Body, maxResponseSize),
-	)
-	if err != nil {
-		return "", fmt.Errorf("read LLM response: %w", err)
-	}
-
-	if resp.StatusCode < http.StatusOK ||
-		resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf(
-			"LLM API returned status %d: %s",
-			resp.StatusCode,
-			strings.TrimSpace(string(body)),
+		req, err := http.NewRequestWithContext(
+			ctx,
+			http.MethodPost,
+			c.endpoint,
+			bytes.NewReader(payload),
 		)
+		if err != nil {
+			return "", fmt.Errorf("create LLM request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", fmt.Errorf("send LLM request: %w", err)
+			}
+			if attempt+1 < maxAttempts {
+				if sleepErr := c.waitForRetry(ctx, c.backoffDelay(attempt)); sleepErr != nil {
+					return "", sleepErr
+				}
+				continue
+			}
+			return "", fmt.Errorf("send LLM request: %w", err)
+		}
+
+		body, readErr := io.ReadAll(
+			io.LimitReader(resp.Body, maxResponseSize),
+		)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			if ctx.Err() != nil {
+				return "", fmt.Errorf("read LLM response: %w", readErr)
+			}
+			if attempt+1 < maxAttempts {
+				if sleepErr := c.waitForRetry(ctx, c.backoffDelay(attempt)); sleepErr != nil {
+					return "", sleepErr
+				}
+				continue
+			}
+			return "", fmt.Errorf("read LLM response: %w", readErr)
+		}
+
+		if resp.StatusCode < http.StatusOK ||
+			resp.StatusCode >= http.StatusMultipleChoices {
+			statusErr := fmt.Errorf(
+				"LLM API returned status %d: %s",
+				resp.StatusCode,
+				truncateErrorBody(string(body), maxErrorBodyRunes),
+			)
+
+			if isRetryableStatus(resp.StatusCode) && attempt+1 < maxAttempts {
+				delay := c.backoffDelay(attempt)
+				if retryAfter, ok := parseRetryAfter(resp.Header.Get("Retry-After"), c.now()); ok {
+					delay = retryAfter
+				}
+				if sleepErr := c.waitForRetry(ctx, delay); sleepErr != nil {
+					return "", sleepErr
+				}
+				continue
+			}
+
+			return "", statusErr
+		}
+
+		var result chatResponse
+
+		if err := json.Unmarshal(body, &result); err != nil {
+			return "", fmt.Errorf("decode LLM response: %w", err)
+		}
+
+		if result.Error != nil {
+			return "", fmt.Errorf(
+				"LLM API error: %s",
+				truncateErrorBody(result.Error.Message, maxErrorBodyRunes),
+			)
+		}
+
+		if len(result.Choices) == 0 {
+			return "", fmt.Errorf("LLM response contains no choices")
+		}
+
+		content := strings.TrimSpace(result.Choices[0].Message.Content)
+
+		if content == "" {
+			return "", fmt.Errorf("LLM response content is empty")
+		}
+
+		return content, nil
 	}
 
-	var result chatResponse
+	return "", fmt.Errorf("LLM request failed after %d attempts", maxAttempts)
+}
 
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("decode LLM response: %w", err)
+func (c *Client) backoffDelay(attempt int) time.Duration {
+	base := c.baseBackoff
+	if base <= 0 {
+		base = defaultBaseBackoff
 	}
 
-	if result.Error != nil {
-		return "", fmt.Errorf("LLM API error: %s", result.Error.Message)
+	delay := base << attempt
+	if c.jitterFn != nil {
+		return c.jitterFn(delay)
+	}
+	return applyJitter(delay)
+}
+
+func (c *Client) waitForRetry(ctx context.Context, delay time.Duration) error {
+	if c.sleepFn != nil {
+		return c.sleepFn(ctx, delay)
+	}
+	return sleepWithContext(ctx, delay)
+}
+
+func (c *Client) now() time.Time {
+	if c != nil && c.clock != nil {
+		return c.clock()
+	}
+	return time.Now()
+}
+
+func isRetryableStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests ||
+		(statusCode >= http.StatusInternalServerError && statusCode <= 599)
+}
+
+func parseRetryAfter(header string, now time.Time) (time.Duration, bool) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0, false
 	}
 
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("LLM response contains no choices")
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
 	}
 
-	content := strings.TrimSpace(result.Choices[0].Message.Content)
-
-	if content == "" {
-		return "", fmt.Errorf("LLM response content is empty")
+	if retryAt, err := http.ParseTime(header); err == nil {
+		delay := retryAt.Sub(now)
+		if delay < 0 {
+			delay = 0
+		}
+		return delay, true
 	}
 
-	return content, nil
+	return 0, false
+}
+
+func applyJitter(base time.Duration) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+
+	half := base / 2
+	if half <= 0 {
+		return base
+	}
+
+	return half + time.Duration(rand.Int64N(int64(base)))
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return ctx.Err()
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func truncateErrorBody(body string, maxRunes int) string {
+	trimmed := strings.TrimSpace(body)
+	if maxRunes <= 0 {
+		return ""
+	}
+
+	runes := []rune(trimmed)
+	if len(runes) <= maxRunes {
+		return trimmed
+	}
+
+	if maxRunes <= 3 {
+		return string(runes[:maxRunes])
+	}
+
+	return string(runes[:maxRunes-3]) + "..."
 }

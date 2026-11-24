@@ -314,3 +314,70 @@ func TestNewMemoryExtractorRejectsNilClient(t *testing.T) {
 		t.Error("extractor should be nil")
 	}
 }
+
+func TestMemoryExtractorStripsCodeFencesAndThinkBlocks(t *testing.T) {
+	validItem := `[{
+		"scope": "member",
+		"type": "preference",
+		"content": "Likes Go",
+		"importance": 3,
+		"confidence": 0.9,
+		"tags": ["go"],
+		"source_message_id": "message-001"
+	}]`
+
+	tests := []struct {
+		name      string
+		rawReply  string
+		wantCount int
+		wantErr   bool
+	}{
+		{
+			name:      "markdown json fence",
+			rawReply:  "```json\n" + validItem + "\n```",
+			wantCount: 1,
+		},
+		{
+			name:      "plain markdown fence with empty array",
+			rawReply:  "```\n[]\n```",
+			wantCount: 0,
+		},
+		{
+			name:      "think block before array",
+			rawReply:  "<think>Analyzing user preference for Go...</think>\n" + validItem,
+			wantCount: 1,
+		},
+		{
+			name:      "multiline think block and markdown fence combined",
+			rawReply:  "<THINK>\nStep 1: check messages\nStep 2: extract\n</THINK>\n\n```json\n" + validItem + "\n```",
+			wantCount: 1,
+		},
+		{
+			name:     "think block followed by non-array object is still rejected",
+			rawReply: `<think>thinking</think> {"scope":"member"}`,
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			extractor := newTestMemoryExtractor(t, func(w http.ResponseWriter, r *http.Request) {
+				writeLLMResponse(w, tt.rawReply)
+			})
+
+			memories, err := extractor.Extract(context.Background(), validExtractionInput())
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %+v", memories)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Extract() error = %v", err)
+			}
+			if len(memories) != tt.wantCount {
+				t.Fatalf("len(memories) = %d, want %d", len(memories), tt.wantCount)
+			}
+		})
+	}
+}

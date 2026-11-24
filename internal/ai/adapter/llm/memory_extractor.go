@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"the-bebot/internal/memory/core"
 )
+
+var thinkBlockPattern = regexp.MustCompile(`(?is)<think>.*?</think>`)
 
 const memoryExtractionSystemPrompt = `
 You are a memory extraction engine for The Bebot,
@@ -135,7 +138,7 @@ func (e *MemoryExtractor) Extract(
 		return nil, fmt.Errorf("generate memory extraction: %w", err)
 	}
 
-	response = strings.TrimSpace(response)
+	response = cleanExtractionResponse(response)
 
 	// Reject non-array responses before unmarshalling.
 	if !strings.HasPrefix(response, "[") {
@@ -153,4 +156,32 @@ func (e *MemoryExtractor) Extract(
 	}
 
 	return memories, nil
+}
+
+func cleanExtractionResponse(raw string) string {
+	cleaned := thinkBlockPattern.ReplaceAllString(raw, "")
+	cleaned = stripMarkdownCodeFence(cleaned)
+	cleaned = thinkBlockPattern.ReplaceAllString(cleaned, "")
+	return strings.TrimSpace(cleaned)
+}
+
+func stripMarkdownCodeFence(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+
+	rest := s[3:]
+	if idx := strings.IndexByte(rest, '\n'); idx >= 0 {
+		rest = rest[idx+1:]
+	} else {
+		rest = strings.TrimSpace(rest)
+	}
+
+	rest = strings.TrimSpace(rest)
+	if strings.HasSuffix(rest, "```") {
+		rest = strings.TrimSuffix(rest, "```")
+	}
+
+	return strings.TrimSpace(rest)
 }

@@ -18,6 +18,7 @@ func unsetRelevantEnv(t *testing.T) {
 		"LLM_API_KEY",
 		"LLM_BASE_URL",
 		"LLM_MODEL",
+		"LLM_MAX_TOKENS",
 		"CONVERSATION_TIMEOUT",
 		"MENTION_TIMEOUT",
 		"MENTION_USER_COOLDOWN",
@@ -44,6 +45,10 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	cfg, err := LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+
+	if cfg.LLM.MaxTokens != 600 {
+		t.Errorf("LLM.MaxTokens = %d, want 600", cfg.LLM.MaxTokens)
 	}
 
 	if cfg.Conversation.Timeout != 30*time.Second {
@@ -94,6 +99,7 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	t.Setenv("LLM_BASE_URL", "https://llm.example.com/v1/chat/completions")
 	t.Setenv("LLM_API_KEY", "key-123")
 	t.Setenv("LLM_MODEL", "model-x")
+	t.Setenv("LLM_MAX_TOKENS", "1024")
 	t.Setenv("CONVERSATION_TIMEOUT", "45s")
 	t.Setenv("MENTION_TIMEOUT", "90s")
 	t.Setenv("MENTION_USER_COOLDOWN", "10s")
@@ -114,6 +120,10 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 
 	if cfg.AppName != "bebot-test" || cfg.AppEnv != "production" {
 		t.Errorf("unexpected app settings: %+v", cfg)
+	}
+
+	if cfg.LLM.MaxTokens != 1024 {
+		t.Errorf("LLM.MaxTokens = %d, want 1024", cfg.LLM.MaxTokens)
 	}
 
 	if cfg.Conversation.Timeout != 45*time.Second {
@@ -173,6 +183,9 @@ func TestLoadFromEnvRejectsInvalidValues(t *testing.T) {
 		key  string
 		val  string
 	}{
+		{name: "non-int LLM max tokens", key: "LLM_MAX_TOKENS", val: "abc"},
+		{name: "zero LLM max tokens", key: "LLM_MAX_TOKENS", val: "0"},
+		{name: "negative LLM max tokens", key: "LLM_MAX_TOKENS", val: "-50"},
 		{name: "invalid timeout format", key: "CONVERSATION_TIMEOUT", val: "not-a-duration"},
 		{name: "zero timeout", key: "CONVERSATION_TIMEOUT", val: "0s"},
 		{name: "negative timeout", key: "CONVERSATION_TIMEOUT", val: "-5s"},

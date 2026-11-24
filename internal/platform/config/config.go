@@ -41,9 +41,10 @@ type MongoDBConfig struct {
 }
 
 type LLMConfig struct {
-	APIKey  string
-	BaseURL string
-	Model   string
+	APIKey    string
+	BaseURL   string
+	Model     string
+	MaxTokens int
 }
 
 type ConversationConfig struct {
@@ -85,9 +86,10 @@ func LoadFromEnv() (*Config, error) {
 		},
 
 		LLM: LLMConfig{
-			APIKey:  getEnv("LLM_API_KEY", ""),
-			BaseURL: getEnv("LLM_BASE_URL", ""),
-			Model:   getEnv("LLM_MODEL", ""),
+			APIKey:    getEnv("LLM_API_KEY", ""),
+			BaseURL:   getEnv("LLM_BASE_URL", ""),
+			Model:     getEnv("LLM_MODEL", ""),
+			MaxTokens: 600,
 		},
 
 		Conversation: ConversationConfig{
@@ -114,6 +116,12 @@ func LoadFromEnv() (*Config, error) {
 	}
 
 	var err error
+
+	if cfg.LLM.MaxTokens, err = getInt(
+		"LLM_MAX_TOKENS", cfg.LLM.MaxTokens,
+	); err != nil {
+		return nil, err
+	}
 
 	if cfg.Conversation.Timeout, err = getDuration(
 		"CONVERSATION_TIMEOUT", cfg.Conversation.Timeout,
@@ -173,6 +181,10 @@ func LoadFromEnv() (*Config, error) {
 func (c *Config) Validate() error {
 	if c == nil {
 		return errors.New("config is required")
+	}
+
+	if c.LLM.MaxTokens <= 0 {
+		return errors.New("LLM_MAX_TOKENS must be greater than zero")
 	}
 
 	if c.Conversation.Timeout <= 0 {

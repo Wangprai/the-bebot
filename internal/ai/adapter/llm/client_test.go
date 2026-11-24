@@ -3,11 +3,14 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"the-bebot/internal/conversation/core"
 )
@@ -763,5 +766,270 @@ func TestBuildChatMessagesRecognizesSelfByBotUserIDWithoutIsSelfFlag(t *testing.
 	// Bare bot mention trigger should still produce a usable non-empty message.
 	if got[2].Role != "user" || !strings.HasPrefix(got[2].Content, "Bob: ") || strings.Contains(got[2].Content, "<@bot-self>") {
 		t.Errorf("unexpected bare-mention trigger formatting: %+v", got[2])
+	}
+}
+
+func TestGenerateSendsMaxTokens(t *testing.T) {
+	var capturedMaxTokens int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		capturedMaxTokens = req.MaxTokens
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	// Default max_tokens = 600.
+	defaultClient := newTestClient(t, server.URL)
+	if _, err := defaultClient.Generate(context.Background(), core.ConversationContext{
+		Messages: []core.Message{{Content: "hi"}},
+	}); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if capturedMaxTokens != 600 {
+		t.Errorf("default max_tokens = %d, want 600", capturedMaxTokens)
+	}
+
+	// Custom max_tokens.
+	customClient, err := NewClient(Config{
+		Endpoint:  server.URL,
+		APIKey:    "test-key",
+		Model:     "test-model",
+		MaxTokens: 350,
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if _, err := customClient.Generate(context.Background(), core.ConversationContext{
+		Messages: []core.Message{{Content: "hi"}},
+	}); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if capturedMaxTokens != 350 {
+		t.Errorf("custom max_tokens = %d, want 350", capturedMaxTokens)
+	}
+
+	// Negative max_tokens rejected.
+	if _, err := NewClient(Config{
+		Endpoint:  server.URL,
+		APIKey:    "test-key",
+		Model:     "test-model",
+		MaxTokens: -1,
+	}); err == nil {
+		t.Fatal("expected error for negative MaxTokens")
+	}
+}
+
+func TestGenerateRetriesOn5xxWithExponentialBackoff(t *testing.T) {
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"temporary overload"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"recovered"}}]}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL)
+	client.baseBackoff = 100 * time.Millisecond
+	client.jitterFn = func(d time.Duration) time.Duration { return d } // deterministic for backoff check
+
+	var sleeps []time.Duration
+	client.sleepFn = func(ctx context.Context, d time.Duration) error {
+		sleeps = append(sleeps, d)
+		return nil
+	}
+
+	got, err := client.Generate(context.Background(), core.ConversationContext{
+		Messages: []core.Message{{Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if got != "recovered" {
+		t.Errorf("got = %q, want recovered", got)
+	}
+	if attempts.Load() != 3 {
+		t.Errorf("attempts = %d, want 3", attempts.Load())
+	}
+	if len(sleeps) != 2 || sleeps[0] != 100*time.Millisecond || sleeps[1] != 200*time.Millisecond {
+		t.Errorf("backoff delays = %v, want [100ms 200ms]", sleeps)
+	}
+}
+
+func TestGenerateRetriesOn429AndHonorsRetryAfter(t *testing.T) {
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.Header().Set("Retry-After", "3")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`rate limited`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"after rate limit"}}]}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL)
+	var sleeps []time.Duration
+	client.sleepFn = func(ctx context.Context, d time.Duration) error {
+		sleeps = append(sleeps, d)
+		return nil
+	}
+
+	got, err := client.Generate(context.Background(), core.ConversationContext{
+		Messages: []core.Message{{Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if got != "after rate limit" {
+		t.Errorf("got = %q, want after rate limit", got)
+	}
+	if attempts.Load() != 2 {
+		t.Errorf("attempts = %d, want 2", attempts.Load())
+	}
+	if len(sleeps) != 1 || sleeps[0] != 3*time.Second {
+		t.Errorf("sleeps = %v, want [3s] from Retry-After header", sleeps)
+	}
+}
+
+func TestGenerateRetriesOnNetworkError(t *testing.T) {
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			// Force an abrupt TCP connection drop to simulate a network error.
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("ResponseWriter does not support Hijacker")
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("Hijack() error = %v", err)
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok after drop"}}]}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL)
+	client.sleepFn = func(ctx context.Context, d time.Duration) error { return nil }
+
+	got, err := client.Generate(context.Background(), core.ConversationContext{
+		Messages: []core.Message{{Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if got != "ok after drop" {
+		t.Errorf("got = %q, want ok after drop", got)
+	}
+	if attempts.Load() != 2 {
+		t.Errorf("attempts = %d, want 2", attempts.Load())
+	}
+}
+
+func TestGenerateDoesNotRetryNon429ClientErrors(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var attempts atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`client error`))
+			}))
+			defer server.Close()
+
+			client := newTestClient(t, server.URL)
+			client.sleepFn = func(ctx context.Context, d time.Duration) error {
+				t.Error("sleepFn should not be called for non-retryable 4xx")
+				return nil
+			}
+
+			if _, err := client.Generate(context.Background(), core.ConversationContext{
+				Messages: []core.Message{{Content: "hi"}},
+			}); err == nil {
+				t.Fatal("expected error")
+			}
+
+			if attempts.Load() != 1 {
+				t.Errorf("attempts = %d, want 1", attempts.Load())
+			}
+		})
+	}
+}
+
+func TestGenerateRetryRespectsContextCancellation(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`too many requests`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	_, err := client.Generate(ctx, core.ConversationContext{
+		Messages: []core.Message{{Content: "hi"}},
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+	if attempts.Load() != 1 {
+		t.Errorf("attempts = %d, want 1 (should abort wait on context cancel)", attempts.Load())
+	}
+}
+
+func TestGenerateTruncatesLongErrorBody(t *testing.T) {
+	longBody := strings.Repeat("x", 300) + "SECRET_TAIL_MUST_NOT_APPEAR"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(longBody))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL)
+
+	_, err := client.Generate(context.Background(), core.ConversationContext{
+		Messages: []core.Message{{Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected API error")
+	}
+
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "SECRET_TAIL_MUST_NOT_APPEAR") {
+		t.Errorf("error message leaked full response body: %q", errMsg)
+	}
+
+	// Extract the body snippet after "LLM API returned status 400: ".
+	parts := strings.SplitN(errMsg, ": ", 2)
+	if len(parts) != 2 {
+		t.Fatalf("unexpected error format: %q", errMsg)
+	}
+	if rc := utf8.RuneCountInString(parts[1]); rc > maxErrorBodyRunes {
+		t.Errorf("truncated error body rune count = %d, want <= %d", rc, maxErrorBodyRunes)
 	}
 }
