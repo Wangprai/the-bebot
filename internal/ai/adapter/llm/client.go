@@ -8,10 +8,16 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"the-bebot/internal/conversation/core"
+)
+
+var (
+	mentionTokenPattern    = regexp.MustCompile(`<@!?([0-9A-Za-z_-]+)>`)
+	horizontalSpacePattern = regexp.MustCompile(`[ \t]{2,}`)
 )
 
 const (
@@ -131,7 +137,7 @@ func (c *Client) Generate(
 
 	messages, err := buildChatMessages(
 		systemPrompt,
-		conversationContext.Messages,
+		conversationContext,
 	)
 	if err != nil {
 		return "", err
@@ -328,11 +334,24 @@ func buildMemorySystemPrompt(
 
 func buildChatMessages(
 	systemPrompt string,
-	contextMessages []core.Message,
+	conversationContext core.ConversationContext,
 ) ([]chatMessage, error) {
+	contextMessages := conversationContext.Messages
 	if len(contextMessages) == 0 {
 		return nil, fmt.Errorf("conversation context is empty")
 	}
+
+	botUserID := strings.TrimSpace(conversationContext.BotUserID)
+	if botUserID == "" {
+		for _, msg := range contextMessages {
+			if msg.IsSelf && msg.UserID != "" {
+				botUserID = msg.UserID
+				break
+			}
+		}
+	}
+
+	knownNames := collectKnownUserNames(conversationContext)
 
 	messages := make([]chatMessage, 0, len(contextMessages)+1)
 
@@ -343,20 +362,50 @@ func buildChatMessages(
 
 	for _, message := range contextMessages {
 		content := strings.TrimSpace(message.Content)
-
 		if content == "" {
 			continue
 		}
 
-		// Other bots are context, not The Bebot's own responses.
-		if message.IsBot {
-			content = "[Another bot said]: " + content
+		isSelf := message.IsSelf || (botUserID != "" && message.UserID == botUserID)
+		isTrigger := conversationContext.TriggerMessageID != "" &&
+			message.ID == conversationContext.TriggerMessageID
+
+		if isTrigger && botUserID != "" {
+			content = stripBotMention(content, botUserID)
+			if content == "" {
+				content = "(mentioned you)"
+			}
 		}
 
-		messages = append(messages, chatMessage{
-			Role:    "user",
-			Content: content,
-		})
+		content = replaceMentionTokens(content, knownNames)
+
+		switch {
+		case isSelf:
+			messages = append(messages, chatMessage{
+				Role:    "assistant",
+				Content: content,
+			})
+
+		case message.IsBot:
+			formatted := "[Bot]: " + content
+			if name := strings.TrimSpace(message.AuthorName); name != "" {
+				formatted = fmt.Sprintf("[Bot %s]: %s", name, content)
+			}
+			messages = append(messages, chatMessage{
+				Role:    "user",
+				Content: formatted,
+			})
+
+		default:
+			formatted := content
+			if name := strings.TrimSpace(message.AuthorName); name != "" {
+				formatted = fmt.Sprintf("%s: %s", name, content)
+			}
+			messages = append(messages, chatMessage{
+				Role:    "user",
+				Content: formatted,
+			})
+		}
 	}
 
 	if len(messages) == 1 {
@@ -364,6 +413,65 @@ func buildChatMessages(
 	}
 
 	return messages, nil
+}
+
+func collectKnownUserNames(conversationContext core.ConversationContext) map[string]string {
+	names := make(map[string]string)
+
+	for id, name := range conversationContext.MentionNames {
+		if trimmed := strings.TrimSpace(name); id != "" && trimmed != "" {
+			names[id] = trimmed
+		}
+	}
+
+	if conversationContext.Community != nil && conversationContext.Community.MemberUserID != "" {
+		memberName := strings.TrimSpace(conversationContext.Community.MemberNickname)
+		if memberName == "" {
+			memberName = strings.TrimSpace(conversationContext.Community.MemberName)
+		}
+		if memberName != "" {
+			names[conversationContext.Community.MemberUserID] = memberName
+		}
+	}
+
+	for _, msg := range conversationContext.Messages {
+		if msg.UserID != "" {
+			if name := strings.TrimSpace(msg.AuthorName); name != "" {
+				names[msg.UserID] = name
+			}
+		}
+	}
+
+	return names
+}
+
+func stripBotMention(content string, botUserID string) string {
+	if botUserID == "" || !strings.Contains(content, "<@") {
+		return strings.TrimSpace(content)
+	}
+
+	cleaned := strings.ReplaceAll(content, "<@"+botUserID+">", "")
+	cleaned = strings.ReplaceAll(cleaned, "<@!"+botUserID+">", "")
+	cleaned = horizontalSpacePattern.ReplaceAllString(cleaned, " ")
+
+	return strings.TrimSpace(cleaned)
+}
+
+func replaceMentionTokens(content string, names map[string]string) string {
+	if len(names) == 0 || !strings.Contains(content, "<@") {
+		return content
+	}
+
+	return mentionTokenPattern.ReplaceAllStringFunc(content, func(token string) string {
+		matches := mentionTokenPattern.FindStringSubmatch(token)
+		if len(matches) < 2 {
+			return token
+		}
+		if name := strings.TrimSpace(names[matches[1]]); name != "" {
+			return "@" + name
+		}
+		return token
+	})
 }
 
 func (c *Client) GenerateText(

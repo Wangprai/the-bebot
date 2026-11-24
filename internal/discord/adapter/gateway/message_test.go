@@ -175,3 +175,33 @@ func TestToMentionEventExtractsRealDiscordIdentityMetadata(t *testing.T) {
 		t.Errorf("unexpected fallback metadata: display=%q nick=%q", event2.UserDisplayName, event2.UserNickname)
 	}
 }
+
+func TestToMentionEventExtractsMentionNames(t *testing.T) {
+	now := time.Now().UTC()
+
+	msg := &discordgo.Message{
+		ID:        "msg-3",
+		GuildID:   "guild-1",
+		ChannelID: "ch-1",
+		Content:   "<@bot> tell <@u2> hi",
+		Timestamp: now,
+		Author: &discordgo.User{
+			ID:         "u1",
+			GlobalName: "Alice",
+			Username:   "alice",
+		},
+		Mentions: []*discordgo.User{
+			{ID: "bot", Username: "TheBebot"},
+			{ID: "u2", GlobalName: "BobGlobal", Username: "bob"},
+		},
+	}
+
+	event, err := toMentionEvent(msg)
+	if err != nil {
+		t.Fatalf("toMentionEvent() error = %v", err)
+	}
+
+	if event.MentionNames["bot"] != "TheBebot" || event.MentionNames["u2"] != "BobGlobal" {
+		t.Errorf("unexpected MentionNames: %+v", event.MentionNames)
+	}
+}

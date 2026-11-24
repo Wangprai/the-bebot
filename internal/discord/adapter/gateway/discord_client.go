@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/bwmarrin/discordgo"
@@ -15,6 +16,9 @@ const maxDiscordMessageRunes = 2000
 
 type DiscordClient struct {
 	session *discordgo.Session
+
+	mu        sync.RWMutex
+	botUserID string
 }
 
 func NewDiscordClient(
@@ -27,6 +31,43 @@ func NewDiscordClient(
 	return &DiscordClient{
 		session: session,
 	}, nil
+}
+
+// SetBotUserID sets a fallback bot user ID used if session.State.User is unavailable.
+func (c *DiscordClient) SetBotUserID(userID string) {
+	if c == nil {
+		return
+	}
+
+	c.mu.Lock()
+	c.botUserID = strings.TrimSpace(userID)
+	c.mu.Unlock()
+}
+
+// BotUserID returns the bot's own Discord user ID from session state when
+// available, falling back safely to the explicitly configured ID.
+func (c *DiscordClient) BotUserID() string {
+	if c == nil {
+		return ""
+	}
+
+	if c.session != nil && c.session.State != nil {
+		c.session.State.RLock()
+		var stateUserID string
+		if c.session.State.User != nil {
+			stateUserID = c.session.State.User.ID
+		}
+		c.session.State.RUnlock()
+
+		if stateUserID != "" {
+			return stateUserID
+		}
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.botUserID
 }
 
 // Compile-time interface checks.
@@ -67,6 +108,7 @@ func (c *DiscordClient) FetchRecentMessages(
 	}
 
 	messages := make([]core.Message, 0, len(discordMessages))
+	botUserID := c.BotUserID()
 
 	for _, discordMessage := range discordMessages {
 		if discordMessage == nil || discordMessage.Author == nil {
@@ -92,14 +134,28 @@ func (c *DiscordClient) FetchRecentMessages(
 			messageGuildID = guildID
 		}
 
+		authorName := resolveDiscordAuthorName(
+			c.session,
+			messageGuildID,
+			discordMessage.Author,
+			discordMessage.Member,
+		)
+
+		content := discordMessage.Content
+		if mentionNames := extractMentionNames(c.session, messageGuildID, discordMessage.Mentions); len(mentionNames) > 0 {
+			content = replaceMentionTokens(content, mentionNames)
+		}
+
 		messages = append(messages, core.Message{
-			ID:        discordMessage.ID,
-			GuildID:   messageGuildID,
-			ChannelID: discordMessage.ChannelID,
-			UserID:    discordMessage.Author.ID,
-			Content:   discordMessage.Content,
-			CreatedAt: discordMessage.Timestamp,
-			IsBot:     discordMessage.Author.Bot,
+			ID:         discordMessage.ID,
+			GuildID:    messageGuildID,
+			ChannelID:  discordMessage.ChannelID,
+			UserID:     discordMessage.Author.ID,
+			AuthorName: authorName,
+			Content:    content,
+			CreatedAt:  discordMessage.Timestamp,
+			IsBot:      discordMessage.Author.Bot,
+			IsSelf:     botUserID != "" && discordMessage.Author.ID == botUserID,
 		})
 	}
 
@@ -218,9 +274,16 @@ func (c *DiscordClient) Send(
 				GuildID:   messageGuildID,
 				ChannelID: messageChannelID,
 				UserID:    discordMessage.Author.ID,
+				AuthorName: resolveDiscordAuthorName(
+					c.session,
+					messageGuildID,
+					discordMessage.Author,
+					discordMessage.Member,
+				),
 				Content:   discordMessage.Content,
 				CreatedAt: discordMessage.Timestamp,
 				IsBot:     discordMessage.Author.Bot,
+				IsSelf:    true,
 			}
 		}
 	}

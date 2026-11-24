@@ -101,20 +101,24 @@ func TestGenerateSuccess(t *testing.T) {
 				t.Errorf("model = %s, want test-model", request.Model)
 			}
 
-			if len(request.Messages) != 3 {
-				t.Fatalf("messages length = %d, want 3", len(request.Messages))
+			if len(request.Messages) != 4 {
+				t.Fatalf("messages length = %d, want 4", len(request.Messages))
 			}
 
 			if request.Messages[0].Role != "system" {
 				t.Errorf("first role = %s, want system", request.Messages[0].Role)
 			}
 
-			if request.Messages[1].Content != "Hello Bebot" {
-				t.Errorf("unexpected first conversation message")
+			if request.Messages[1].Role != "user" || request.Messages[1].Content != "Alice: Hello Bebot" {
+				t.Errorf("unexpected human message: %+v", request.Messages[1])
 			}
 
-			if request.Messages[2].Content != "[Another bot said]: Hello" {
-				t.Errorf("unexpected bot message: %s", request.Messages[2].Content)
+			if request.Messages[2].Role != "assistant" || request.Messages[2].Content != "Hey Alice!" {
+				t.Errorf("unexpected self bot message: %+v", request.Messages[2])
+			}
+
+			if request.Messages[3].Role != "user" || request.Messages[3].Content != "[Bot HelperBot]: Hello" {
+				t.Errorf("unexpected other bot message: %+v", request.Messages[3])
 			}
 
 			w.Header().Set("Content-Type", "application/json")
@@ -137,13 +141,28 @@ func TestGenerateSuccess(t *testing.T) {
 	client := newTestClient(t, server.URL)
 
 	conversationContext := core.ConversationContext{
+		BotUserID: "bebot-001",
 		Messages: []core.Message{
 			{
-				Content: "Hello Bebot",
+				ID:         "msg-1",
+				UserID:     "user-1",
+				AuthorName: "Alice",
+				Content:    "Hello Bebot",
 			},
 			{
-				Content: "Hello",
-				IsBot:   true,
+				ID:         "msg-2",
+				UserID:     "bebot-001",
+				AuthorName: "The Bebot",
+				Content:    "Hey Alice!",
+				IsBot:      true,
+				IsSelf:     true,
+			},
+			{
+				ID:         "msg-3",
+				UserID:     "bot-2",
+				AuthorName: "HelperBot",
+				Content:    "Hello",
+				IsBot:      true,
 			},
 		},
 	}
@@ -635,5 +654,114 @@ func TestGenerateIncludesCommunityAndMemberContext(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
+	}
+}
+
+func TestBuildChatMessagesAuthorKindsAndMentionReplacement(t *testing.T) {
+	ctx := core.ConversationContext{
+		TriggerMessageID: "msg-4",
+		BotUserID:        "900",
+		MentionNames: map[string]string{
+			"300": "Charlie",
+			"900": "The Bebot",
+		},
+		Messages: []core.Message{
+			{
+				ID:         "msg-1",
+				UserID:     "100",
+				AuthorName: "Alice",
+				Content:    "Hey <@!200> and <@300>, ask <@900> about <@999>",
+			},
+			{
+				ID:         "msg-2",
+				UserID:     "900",
+				AuthorName: "The Bebot",
+				Content:    "Hi <@100>, what do you need?",
+				IsBot:      true,
+				IsSelf:     true,
+			},
+			{
+				ID:         "msg-3",
+				UserID:     "200",
+				AuthorName: "MusicBot",
+				Content:    "Now playing for <@100>",
+				IsBot:      true,
+			},
+			{
+				ID:         "msg-4",
+				UserID:     "100",
+				AuthorName: "Alice",
+				Content:    "<@!900> tell <@300> and <@999> hi",
+			},
+		},
+	}
+
+	got, err := buildChatMessages("system prompt", ctx)
+	if err != nil {
+		t.Fatalf("buildChatMessages() error = %v", err)
+	}
+
+	if len(got) != 5 {
+		t.Fatalf("expected 5 chat messages, got %d: %+v", len(got), got)
+	}
+
+	// 1. Human message with mention replacement (including <@!id>, known mention, bot mention, unknown mention kept).
+	if got[1].Role != "user" || got[1].Content != "Alice: Hey @MusicBot and @Charlie, ask @The Bebot about <@999>" {
+		t.Errorf("msg[1] = %+v", got[1])
+	}
+
+	// 2. Bot's own earlier message -> role "assistant" with plain content (no author prefix) and mention replaced.
+	if got[2].Role != "assistant" || got[2].Content != "Hi @Alice, what do you need?" {
+		t.Errorf("msg[2] = %+v", got[2])
+	}
+
+	// 3. Another bot -> role "user" with "[Bot <Name>]: <content>".
+	if got[3].Role != "user" || got[3].Content != "[Bot MusicBot]: Now playing for @Alice" {
+		t.Errorf("msg[3] = %+v", got[3])
+	}
+
+	// 4. Trigger message -> bot's own mention stripped, other known mention replaced, unknown kept.
+	if got[4].Role != "user" || got[4].Content != "Alice: tell @Charlie and <@999> hi" {
+		t.Errorf("msg[4] = %+v", got[4])
+	}
+}
+
+func TestBuildChatMessagesRecognizesSelfByBotUserIDWithoutIsSelfFlag(t *testing.T) {
+	ctx := core.ConversationContext{
+		TriggerMessageID: "msg-2",
+		BotUserID:        "bot-self",
+		Messages: []core.Message{
+			{
+				ID:      "msg-1",
+				UserID:  "bot-self",
+				Content: "Earlier reply from persisted doc",
+				IsBot:   true,
+				IsSelf:  false, // simulates legacy persisted document without is_self
+			},
+			{
+				ID:         "msg-2",
+				UserID:     "user-1",
+				AuthorName: "Bob",
+				Content:    "<@bot-self>",
+			},
+		},
+	}
+
+	got, err := buildChatMessages("system", ctx)
+	if err != nil {
+		t.Fatalf("buildChatMessages() error = %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(got))
+	}
+
+	if got[1].Role != "assistant" || got[1].Content != "Earlier reply from persisted doc" {
+		t.Errorf("expected assistant role for bot-self message, got %+v", got[1])
+	}
+
+	// Bare bot mention trigger should still produce a usable non-empty message.
+	if got[2].Role != "user" || !strings.HasPrefix(got[2].Content, "Bob: ") || strings.Contains(got[2].Content, "<@bot-self>") {
+		t.Errorf("unexpected bare-mention trigger formatting: %+v", got[2])
 	}
 }

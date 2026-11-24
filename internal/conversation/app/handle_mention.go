@@ -234,6 +234,17 @@ func (uc *HandleMentionUseCase) HandleMention(
 		return fmt.Errorf("build conversation context: %w", err)
 	}
 
+	if conversationContext.BotUserID == "" && event.BotUserID != "" {
+		conversationContext.BotUserID = event.BotUserID
+	}
+
+	if len(conversationContext.MentionNames) == 0 && len(event.MentionNames) > 0 {
+		conversationContext.MentionNames = make(map[string]string, len(event.MentionNames))
+		for id, name := range event.MentionNames {
+			conversationContext.MentionNames[id] = name
+		}
+	}
+
 	if uc.personalityProvider != nil {
 		personalityCtx, err := uc.personalityProvider.GetPersonality(ctx)
 		if err != nil {
@@ -451,6 +462,11 @@ func ensureTriggerMessage(
 		return nil, fmt.Errorf("max messages must be greater than zero")
 	}
 
+	triggerAuthorName := strings.TrimSpace(event.UserNickname)
+	if triggerAuthorName == "" {
+		triggerAuthorName = strings.TrimSpace(event.UserDisplayName)
+	}
+
 	triggerFound := false
 
 	for i, message := range messages {
@@ -464,9 +480,13 @@ func ensureTriggerMessage(
 			return nil, core.ErrInvalidMessage
 		}
 
+		if triggerAuthorName != "" {
+			messages[i].AuthorName = triggerAuthorName
+		}
 		messages[i].Content = strings.TrimSpace(event.Content)
 		messages[i].CreatedAt = event.MentionedAt
 		messages[i].IsBot = false
+		messages[i].IsSelf = false
 
 		triggerFound = true
 		break
@@ -474,13 +494,15 @@ func ensureTriggerMessage(
 
 	if !triggerFound {
 		messages = append(messages, core.Message{
-			ID:        event.MessageID,
-			GuildID:   event.GuildID,
-			ChannelID: event.ChannelID,
-			UserID:    event.UserID,
-			Content:   strings.TrimSpace(event.Content),
-			CreatedAt: event.MentionedAt,
-			IsBot:     false,
+			ID:         event.MessageID,
+			GuildID:    event.GuildID,
+			ChannelID:  event.ChannelID,
+			UserID:     event.UserID,
+			AuthorName: triggerAuthorName,
+			Content:    strings.TrimSpace(event.Content),
+			CreatedAt:  event.MentionedAt,
+			IsBot:      false,
+			IsSelf:     false,
 		})
 	}
 

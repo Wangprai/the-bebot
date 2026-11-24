@@ -370,3 +370,96 @@ func TestConversationRepositoryEnsureIndexes(t *testing.T) {
 		t.Error("expected TTL index idx_conversation_contexts_ttl with expireAfterSeconds=0")
 	}
 }
+
+func TestConversationRepositoryPersistsAuthorNameAndBackwardCompatibility(t *testing.T) {
+	repo := setupConversationRepository(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// 1. Round-trip new AuthorName and IsSelf fields.
+	conv := newTestConversationContext(
+		t,
+		"guild-author",
+		"channel-author",
+		"msg-2",
+		now,
+		24*time.Hour,
+		[]core.Message{
+			{
+				ID:         "msg-1",
+				GuildID:    "guild-author",
+				ChannelID:  "channel-author",
+				UserID:     "bot-1",
+				AuthorName: "The Bebot",
+				Content:    "Hi there!",
+				CreatedAt:  now.Add(-time.Minute),
+				IsBot:      true,
+				IsSelf:     true,
+			},
+			{
+				ID:         "msg-2",
+				GuildID:    "guild-author",
+				ChannelID:  "channel-author",
+				UserID:     "user-1",
+				AuthorName: "Ali",
+				Content:    "Yo!",
+				CreatedAt:  now,
+			},
+		},
+	)
+
+	if err := repo.Save(ctx, conv); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := repo.FindLatest(ctx, "guild-author", "channel-author")
+	if err != nil {
+		t.Fatalf("FindLatest() error = %v", err)
+	}
+	if loaded == nil || len(loaded.Messages) != 2 {
+		t.Fatalf("unexpected loaded context: %+v", loaded)
+	}
+	if loaded.Messages[0].AuthorName != "The Bebot" || !loaded.Messages[0].IsSelf {
+		t.Errorf("first message author metadata lost: %+v", loaded.Messages[0])
+	}
+	if loaded.Messages[1].AuthorName != "Ali" || loaded.Messages[1].IsSelf {
+		t.Errorf("second message author metadata lost: %+v", loaded.Messages[1])
+	}
+
+	// 2. Legacy document without author_name or is_self still loads cleanly.
+	_, err = repo.collection.InsertOne(ctx, bson.M{
+		"guild_id":           "guild-legacy",
+		"channel_id":         "channel-legacy",
+		"trigger_message_id": "legacy-1",
+		"messages": []bson.M{
+			{
+				"id":         "legacy-1",
+				"guild_id":   "guild-legacy",
+				"channel_id": "channel-legacy",
+				"user_id":    "user-legacy",
+				"content":    "Old format message",
+				"created_at": now,
+				"is_bot":     false,
+			},
+		},
+		"created_at": now,
+		"expires_at": now.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("InsertOne legacy doc error = %v", err)
+	}
+
+	legacyLoaded, err := repo.FindLatest(ctx, "guild-legacy", "channel-legacy")
+	if err != nil {
+		t.Fatalf("FindLatest(legacy) error = %v", err)
+	}
+	if legacyLoaded == nil || len(legacyLoaded.Messages) != 1 {
+		t.Fatalf("expected legacy context to load, got %+v", legacyLoaded)
+	}
+	if legacyLoaded.Messages[0].AuthorName != "" || legacyLoaded.Messages[0].IsSelf {
+		t.Errorf("unexpected legacy defaults: %+v", legacyLoaded.Messages[0])
+	}
+}

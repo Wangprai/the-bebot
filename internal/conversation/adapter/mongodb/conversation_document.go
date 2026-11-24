@@ -8,13 +8,15 @@ import (
 )
 
 type conversationMessageDocument struct {
-	ID        string    `bson:"id"`
-	GuildID   string    `bson:"guild_id"`
-	ChannelID string    `bson:"channel_id"`
-	UserID    string    `bson:"user_id"`
-	Content   string    `bson:"content"`
-	CreatedAt time.Time `bson:"created_at"`
-	IsBot     bool      `bson:"is_bot"`
+	ID         string    `bson:"id"`
+	GuildID    string    `bson:"guild_id"`
+	ChannelID  string    `bson:"channel_id"`
+	UserID     string    `bson:"user_id"`
+	AuthorName string    `bson:"author_name,omitempty"`
+	Content    string    `bson:"content"`
+	CreatedAt  time.Time `bson:"created_at"`
+	IsBot      bool      `bson:"is_bot"`
+	IsSelf     bool      `bson:"is_self,omitempty"`
 }
 
 type conversationDocument struct {
@@ -70,13 +72,15 @@ func toConversationDocument(
 		}
 
 		messages = append(messages, conversationMessageDocument{
-			ID:        message.ID,
-			GuildID:   message.GuildID,
-			ChannelID: message.ChannelID,
-			UserID:    message.UserID,
-			Content:   message.Content,
-			CreatedAt: message.CreatedAt.UTC(),
-			IsBot:     message.IsBot,
+			ID:         message.ID,
+			GuildID:    message.GuildID,
+			ChannelID:  message.ChannelID,
+			UserID:     message.UserID,
+			AuthorName: message.AuthorName,
+			Content:    message.Content,
+			CreatedAt:  message.CreatedAt.UTC(),
+			IsBot:      message.IsBot,
+			IsSelf:     message.IsSelf,
 		})
 	}
 
@@ -95,13 +99,15 @@ func (d conversationDocument) toDomain() (core.ConversationContext, error) {
 
 	for _, message := range d.Messages {
 		messages = append(messages, core.Message{
-			ID:        message.ID,
-			GuildID:   message.GuildID,
-			ChannelID: message.ChannelID,
-			UserID:    message.UserID,
-			Content:   message.Content,
-			CreatedAt: message.CreatedAt.UTC(),
-			IsBot:     message.IsBot,
+			ID:         message.ID,
+			GuildID:    message.GuildID,
+			ChannelID:  message.ChannelID,
+			UserID:     message.UserID,
+			AuthorName: message.AuthorName,
+			Content:    message.Content,
+			CreatedAt:  message.CreatedAt.UTC(),
+			IsBot:      message.IsBot,
+			IsSelf:     message.IsSelf,
 		})
 	}
 

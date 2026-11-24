@@ -287,9 +287,14 @@ func (g *Gateway) handleMessageCreate(
 		return
 	}
 
+	mentionEvent.BotUserID = botUserID
+
 	if s != nil && s.State != nil {
 		if guild, err := s.State.Guild(message.GuildID); err == nil && guild != nil {
 			mentionEvent.GuildName = guild.Name
+		}
+		if resolved := extractMentionNames(s, message.GuildID, message.Mentions); len(resolved) > 0 {
+			mentionEvent.MentionNames = resolved
 		}
 	}
 

@@ -17,13 +17,15 @@ var (
 )
 
 type Message struct {
-	ID        string
-	GuildID   string
-	ChannelID string
-	UserID    string
-	Content   string
-	CreatedAt time.Time
-	IsBot     bool
+	ID         string
+	GuildID    string
+	ChannelID  string
+	UserID     string
+	AuthorName string
+	Content    string
+	CreatedAt  time.Time
+	IsBot      bool
+	IsSelf     bool
 }
 
 func NewMessage(
@@ -88,6 +90,8 @@ type MentionEvent struct {
 	UserID          string
 	UserDisplayName string
 	UserNickname    string
+	BotUserID       string
+	MentionNames    map[string]string
 	Content         string
 	MentionedAt     time.Time
 }
@@ -183,6 +187,8 @@ type ConversationContext struct {
 	GuildID          string
 	ChannelID        string
 	TriggerMessageID string
+	BotUserID        string
+	MentionNames     map[string]string
 	Messages         []Message
 	Memories         []MemoryContext
 	Personality      *PersonalityContext

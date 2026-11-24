@@ -563,3 +563,151 @@ func TestDiscordClientStartTyping(t *testing.T) {
 		t.Error("expected error for canceled context")
 	}
 }
+
+func TestDiscordClientFetchRecentMessagesResolvesAuthorNamesSelfAndMentions(t *testing.T) {
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New() error = %v", err)
+	}
+
+	// Populate state with bot user and a guild member nickname.
+	session.State.User = &discordgo.User{ID: "bot-self", Username: "TheBebot"}
+	_ = session.State.GuildAdd(&discordgo.Guild{
+		ID: "guild-001",
+		Members: []*discordgo.Member{
+			{
+				GuildID: "guild-001",
+				Nick:    "StateNickAlice",
+				User: &discordgo.User{
+					ID:         "user-state-nick",
+					GlobalName: "AliceGlobal",
+					Username:   "alice_user",
+				},
+			},
+		},
+	})
+
+	session.Client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			messages := []*discordgo.Message{
+				{
+					ID:        "msg-nick-priority",
+					ChannelID: "channel-001",
+					Content:   "Hi <@user-global>",
+					Timestamp: now.Add(-4 * time.Minute),
+					Author: &discordgo.User{
+						ID:         "user-member-nick",
+						GlobalName: "MemberGlobal",
+						Username:   "member_user",
+					},
+					Member: &discordgo.Member{Nick: "MemberNick"},
+					Mentions: []*discordgo.User{
+						{ID: "user-global", GlobalName: "BobGlobal", Username: "bob_user"},
+					},
+				},
+				{
+					ID:        "msg-state-nick",
+					ChannelID: "channel-001",
+					Content:   "From state nick",
+					Timestamp: now.Add(-3 * time.Minute),
+					Author: &discordgo.User{
+						ID:         "user-state-nick",
+						GlobalName: "AliceGlobal",
+						Username:   "alice_user",
+					},
+				},
+				{
+					ID:        "msg-global-name",
+					ChannelID: "channel-001",
+					Content:   "From global name",
+					Timestamp: now.Add(-2 * time.Minute),
+					Author: &discordgo.User{
+						ID:         "user-global",
+						GlobalName: "BobGlobal",
+						Username:   "bob_user",
+					},
+				},
+				{
+					ID:        "msg-username-only",
+					ChannelID: "channel-001",
+					Content:   "From username",
+					Timestamp: now.Add(-time.Minute),
+					Author: &discordgo.User{
+						ID:       "user-plain",
+						Username: "plain_user",
+					},
+				},
+				{
+					ID:        "msg-bot-self",
+					ChannelID: "channel-001",
+					Content:   "My own earlier reply",
+					Timestamp: now,
+					Author: &discordgo.User{
+						ID:       "bot-self",
+						Username: "TheBebot",
+						Bot:      true,
+					},
+				},
+			}
+			return jsonResponse(http.StatusOK, messages), nil
+		}),
+	}
+
+	client, err := NewDiscordClient(session)
+	if err != nil {
+		t.Fatalf("NewDiscordClient() error = %v", err)
+	}
+
+	if client.BotUserID() != "bot-self" {
+		t.Fatalf("BotUserID() = %q, want bot-self", client.BotUserID())
+	}
+
+	msgs, err := client.FetchRecentMessages(context.Background(), "guild-001", "channel-001", 10)
+	if err != nil {
+		t.Fatalf("FetchRecentMessages() error = %v", err)
+	}
+
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(msgs))
+	}
+
+	if msgs[0].AuthorName != "MemberNick" || msgs[0].Content != "Hi @BobGlobal" {
+		t.Errorf("msg[0] = %+v", msgs[0])
+	}
+	if msgs[1].AuthorName != "StateNickAlice" {
+		t.Errorf("msg[1].AuthorName = %q, want StateNickAlice", msgs[1].AuthorName)
+	}
+	if msgs[2].AuthorName != "BobGlobal" {
+		t.Errorf("msg[2].AuthorName = %q, want BobGlobal", msgs[2].AuthorName)
+	}
+	if msgs[3].AuthorName != "plain_user" {
+		t.Errorf("msg[3].AuthorName = %q, want plain_user", msgs[3].AuthorName)
+	}
+	if !msgs[4].IsSelf || !msgs[4].IsBot || msgs[4].AuthorName != "TheBebot" {
+		t.Errorf("msg[4] expected IsSelf=true, got %+v", msgs[4])
+	}
+}
+
+func TestDiscordClientBotUserIDFallbackWhenStateMissing(t *testing.T) {
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New() error = %v", err)
+	}
+	session.State = nil
+
+	client, err := NewDiscordClient(session)
+	if err != nil {
+		t.Fatalf("NewDiscordClient() error = %v", err)
+	}
+
+	if got := client.BotUserID(); got != "" {
+		t.Errorf("expected empty BotUserID before fallback set, got %q", got)
+	}
+
+	client.SetBotUserID("fallback-bot-id")
+	if got := client.BotUserID(); got != "fallback-bot-id" {
+		t.Errorf("BotUserID() = %q, want fallback-bot-id", got)
+	}
+}

@@ -53,7 +53,7 @@ func (s *conversationService) BuildContext(
 		return ConversationContext{}, ErrTriggerMessageNotFound
 	}
 
-	return NewConversationContext(
+	convCtx, err := NewConversationContext(
 		event.GuildID,
 		event.ChannelID,
 		event.MessageID,
@@ -62,6 +62,19 @@ func (s *conversationService) BuildContext(
 		ttl,
 		maxMessages,
 	)
+	if err != nil {
+		return ConversationContext{}, err
+	}
+
+	convCtx.BotUserID = event.BotUserID
+	if len(event.MentionNames) > 0 {
+		convCtx.MentionNames = make(map[string]string, len(event.MentionNames))
+		for id, name := range event.MentionNames {
+			convCtx.MentionNames[id] = name
+		}
+	}
+
+	return convCtx, nil
 }
 
 func (s *conversationService) ValidateContext(
