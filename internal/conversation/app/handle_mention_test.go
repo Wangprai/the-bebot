@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1198,4 +1200,286 @@ func TestHandleMentionContinuesOnCommunitySyncError(t *testing.T) {
 	if !strings.Contains(logBuf.String(), "community store unavailable") {
 		t.Errorf("expected warning log for community sync failure, got %q", logBuf.String())
 	}
+}
+
+func TestHandleMentionPerUserCooldown(t *testing.T) {
+	useCase, _, _, generator, sender, event := newTestUseCase()
+
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	currentTime := now
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	_ = useCase.SetLogger(logger)
+
+	if err := useCase.SetClock(nil); err == nil {
+		t.Fatal("expected error for nil clock")
+	}
+	if err := useCase.SetClock(func() time.Time { return currentTime }); err != nil {
+		t.Fatalf("SetClock() error = %v", err)
+	}
+	if err := useCase.SetUserCooldown(-time.Second); err == nil {
+		t.Fatal("expected error for negative cooldown")
+	}
+	if err := useCase.SetUserCooldown(5 * time.Second); err != nil {
+		t.Fatalf("SetUserCooldown() error = %v", err)
+	}
+
+	// 1. First mention by user-001 succeeds.
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("first HandleMention() error = %v", err)
+	}
+	if !sender.called {
+		t.Fatal("expected first mention to send reply")
+	}
+
+	// 2. Second mention by same user within cooldown (3s < 5s) is silently ignored.
+	generator.called = false
+	sender.called = false
+	currentTime = now.Add(3 * time.Second)
+
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("cooldown-ignored HandleMention() returned error = %v", err)
+	}
+	if generator.called || sender.called {
+		t.Error("expected mention inside cooldown to be ignored without calling LLM or sender")
+	}
+	if !strings.Contains(logBuf.String(), "cooldown") {
+		t.Errorf("expected debug log for cooldown drop, got %q", logBuf.String())
+	}
+
+	// 3. Another user is unaffected by user-001's cooldown.
+	otherEvent := event
+	otherEvent.UserID = "user-002"
+	otherEvent.MessageID = "message-other"
+	if err := useCase.HandleMention(context.Background(), otherEvent); err != nil {
+		t.Fatalf("other user HandleMention() error = %v", err)
+	}
+	if !sender.called {
+		t.Error("expected other user's mention to be processed")
+	}
+
+	// 4. After 5s cooldown expires, user-001 can mention again.
+	sender.called = false
+	currentTime = now.Add(5 * time.Second)
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("post-cooldown HandleMention() error = %v", err)
+	}
+	if !sender.called {
+		t.Error("expected mention after cooldown expiry to be processed")
+	}
+}
+
+func TestHandleMentionCooldownCleanupEvictsStaleEntries(t *testing.T) {
+	useCase, _, _, _, _, event := newTestUseCase()
+
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	currentTime := now
+	_ = useCase.SetClock(func() time.Time { return currentTime })
+	_ = useCase.SetUserCooldown(5 * time.Second)
+
+	// Record mentions from 5 distinct users at t=0.
+	for i := 0; i < 5; i++ {
+		ev := event
+		ev.UserID = "stale-user-" + string(rune('a'+i))
+		ev.MessageID = "msg-" + string(rune('a'+i))
+		if err := useCase.HandleMention(context.Background(), ev); err != nil {
+			t.Fatalf("HandleMention(%s) error = %v", ev.UserID, err)
+		}
+	}
+
+	if got := useCase.cooldownEntryCount(); got != 5 {
+		t.Fatalf("cooldownEntryCount() = %d, want 5", got)
+	}
+
+	// Advance clock past cooldown and trigger a mention from a fresh user.
+	currentTime = now.Add(10 * time.Second)
+	freshEvent := event
+	freshEvent.UserID = "fresh-user"
+	freshEvent.MessageID = "msg-fresh"
+	if err := useCase.HandleMention(context.Background(), freshEvent); err != nil {
+		t.Fatalf("HandleMention(fresh) error = %v", err)
+	}
+
+	// All 5 stale entries must have been cleaned up, leaving only fresh-user.
+	if got := useCase.cooldownEntryCount(); got != 1 {
+		t.Fatalf("cooldownEntryCount() after cleanup = %d, want 1", got)
+	}
+}
+
+type gatedResponseGenerator struct {
+	started chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (g *gatedResponseGenerator) Generate(
+	ctx context.Context,
+	conversationContext core.ConversationContext,
+) (string, error) {
+	g.calls.Add(1)
+	g.started <- struct{}{}
+	select {
+	case <-g.release:
+		return "ok", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+type threadSafeMessageSender struct {
+	count atomic.Int32
+}
+
+func (s *threadSafeMessageSender) Send(
+	ctx context.Context,
+	guildID string,
+	channelID string,
+	replyToMessageID string,
+	content string,
+) (core.Message, error) {
+	s.count.Add(1)
+	return core.Message{}, nil
+}
+
+type threadSafeContextProvider struct {
+	messages []core.Message
+}
+
+func (p *threadSafeContextProvider) FetchRecentMessages(
+	ctx context.Context,
+	guildID string,
+	channelID string,
+	limit int,
+) ([]core.Message, error) {
+	copied := make([]core.Message, len(p.messages))
+	copy(copied, p.messages)
+	return copied, nil
+}
+
+type threadSafeCandidateCreator struct{}
+
+func (c *threadSafeCandidateCreator) CreateCandidate(
+	ctx context.Context,
+	conversationContext core.ConversationContext,
+) error {
+	return nil
+}
+
+func TestHandleMentionMaxConcurrentMentionsCap(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+
+	gatedGen := &gatedResponseGenerator{
+		started: make(chan struct{}, 4),
+		release: make(chan struct{}),
+	}
+	sender := &threadSafeMessageSender{}
+	provider := &threadSafeContextProvider{}
+
+	useCase := NewHandleMentionUseCase(
+		provider,
+		core.NewConversationService(),
+		gatedGen,
+		sender,
+		&threadSafeCandidateCreator{},
+		nil,
+		15,
+		24*time.Hour,
+	)
+
+	var (
+		logMu  sync.Mutex
+		logBuf bytes.Buffer
+	)
+	logger := slog.New(slog.NewTextHandler(&lockedBuffer{mu: &logMu, buf: &logBuf}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	_ = useCase.SetLogger(logger)
+
+	if err := useCase.SetMaxConcurrentMentions(0); err == nil {
+		t.Fatal("expected error for zero concurrency cap")
+	}
+	if err := useCase.SetMaxConcurrentMentions(2); err != nil {
+		t.Fatalf("SetMaxConcurrentMentions() error = %v", err)
+	}
+
+	makeEvent := func(id string) core.MentionEvent {
+		return core.MentionEvent{
+			GuildID:     "guild-001",
+			ChannelID:   "channel-001",
+			MessageID:   "msg-" + id,
+			UserID:      "user-" + id,
+			Content:     "@TheBebot hi " + id,
+			MentionedAt: now,
+		}
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+
+	// Start 2 mentions that fill the concurrency cap.
+	for _, id := range []string{"1", "2"} {
+		wg.Add(1)
+		go func(ev core.MentionEvent) {
+			defer wg.Done()
+			errCh <- useCase.HandleMention(context.Background(), ev)
+		}(makeEvent(id))
+	}
+
+	// Wait until both are in-flight inside Generate.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-gatedGen.started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for in-flight mentions to start")
+		}
+	}
+
+	// 3rd mention must drop immediately without blocking or calling Generate.
+	if err := useCase.HandleMention(context.Background(), makeEvent("3")); err != nil {
+		t.Fatalf("dropped mention returned error = %v", err)
+	}
+
+	if gatedGen.calls.Load() != 2 {
+		t.Errorf("generator calls = %d, want 2 (3rd mention should be dropped)", gatedGen.calls.Load())
+	}
+
+	logMu.Lock()
+	droppedLog := logBuf.String()
+	logMu.Unlock()
+	if !strings.Contains(droppedLog, "concurrent") {
+		t.Errorf("expected debug log for concurrency drop, got %q", droppedLog)
+	}
+
+	// Release in-flight mentions.
+	close(gatedGen.release)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("in-flight HandleMention() error = %v", err)
+		}
+	}
+
+	if sender.count.Load() != 2 {
+		t.Errorf("sender count = %d, want 2", sender.count.Load())
+	}
+
+	// After slots free up, a 4th mention succeeds.
+	if err := useCase.HandleMention(context.Background(), makeEvent("4")); err != nil {
+		t.Fatalf("4th HandleMention() error = %v", err)
+	}
+	if sender.count.Load() != 3 {
+		t.Errorf("sender count after 4th mention = %d, want 3", sender.count.Load())
+	}
+}
+
+type lockedBuffer struct {
+	mu  *sync.Mutex
+	buf *bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
 }

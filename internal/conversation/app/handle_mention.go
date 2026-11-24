@@ -40,6 +40,13 @@ type HandleMentionUseCase struct {
 	contextTTL           time.Duration
 	mentionTimeout       time.Duration
 	typingInterval       time.Duration
+
+	clock               func() time.Time
+	userCooldown        time.Duration
+	cooldownMu          sync.Mutex
+	userLastMention     map[string]time.Time
+	lastCooldownCleanup time.Time
+	mentionSem          chan struct{}
 }
 
 func NewHandleMentionUseCase(
@@ -64,6 +71,8 @@ func NewHandleMentionUseCase(
 		maxRetrievedMemories: defaultMaxRetrievedMemories,
 		contextTTL:           contextTTL,
 		typingInterval:       defaultTypingInterval,
+		clock:                time.Now,
+		userLastMention:      make(map[string]time.Time),
 	}
 }
 
@@ -181,10 +190,102 @@ func (uc *HandleMentionUseCase) SetLogger(logger *slog.Logger) error {
 	return nil
 }
 
+func (uc *HandleMentionUseCase) SetClock(clock func() time.Time) error {
+	if uc == nil {
+		return fmt.Errorf("handle mention use case is nil")
+	}
+
+	if clock == nil {
+		return fmt.Errorf("clock is required")
+	}
+
+	uc.clock = clock
+	return nil
+}
+
+func (uc *HandleMentionUseCase) SetUserCooldown(cooldown time.Duration) error {
+	if uc == nil {
+		return fmt.Errorf("handle mention use case is nil")
+	}
+
+	if cooldown < 0 {
+		return fmt.Errorf("user cooldown must be zero or greater")
+	}
+
+	uc.cooldownMu.Lock()
+	uc.userCooldown = cooldown
+	uc.cooldownMu.Unlock()
+
+	return nil
+}
+
+func (uc *HandleMentionUseCase) SetMaxConcurrentMentions(limit int) error {
+	if uc == nil {
+		return fmt.Errorf("handle mention use case is nil")
+	}
+
+	if limit <= 0 {
+		return fmt.Errorf("max concurrent mentions must be greater than zero")
+	}
+
+	uc.mentionSem = make(chan struct{}, limit)
+	return nil
+}
+
 func (uc *HandleMentionUseCase) logWarn(msg string, args ...any) {
 	if uc != nil && uc.logger != nil {
 		uc.logger.Warn(msg, args...)
 	}
+}
+
+func (uc *HandleMentionUseCase) logDebug(msg string, args ...any) {
+	if uc != nil && uc.logger != nil {
+		uc.logger.Debug(msg, args...)
+	}
+}
+
+func (uc *HandleMentionUseCase) now() time.Time {
+	if uc != nil && uc.clock != nil {
+		return uc.clock()
+	}
+	return time.Now()
+}
+
+func (uc *HandleMentionUseCase) allowUserMention(userID string) bool {
+	uc.cooldownMu.Lock()
+	defer uc.cooldownMu.Unlock()
+
+	if uc.userCooldown <= 0 {
+		return true
+	}
+
+	now := uc.now()
+
+	if uc.userLastMention == nil {
+		uc.userLastMention = make(map[string]time.Time)
+	}
+
+	if uc.lastCooldownCleanup.IsZero() || now.Sub(uc.lastCooldownCleanup) >= uc.userCooldown {
+		for uid, ts := range uc.userLastMention {
+			if now.Sub(ts) >= uc.userCooldown {
+				delete(uc.userLastMention, uid)
+			}
+		}
+		uc.lastCooldownCleanup = now
+	}
+
+	if last, exists := uc.userLastMention[userID]; exists && now.Sub(last) < uc.userCooldown {
+		return false
+	}
+
+	uc.userLastMention[userID] = now
+	return true
+}
+
+func (uc *HandleMentionUseCase) cooldownEntryCount() int {
+	uc.cooldownMu.Lock()
+	defer uc.cooldownMu.Unlock()
+	return len(uc.userLastMention)
 }
 
 func (uc *HandleMentionUseCase) HandleMention(
@@ -195,15 +296,44 @@ func (uc *HandleMentionUseCase) HandleMention(
 		return fmt.Errorf("context is required")
 	}
 
+	// Validate incoming event.
+	if err := event.Validate(); err != nil {
+		return fmt.Errorf("validate mention event: %w", err)
+	}
+
+	// Enforce global concurrency cap without piling up blocked goroutines.
+	if uc.mentionSem != nil {
+		select {
+		case uc.mentionSem <- struct{}{}:
+			defer func() { <-uc.mentionSem }()
+		default:
+			uc.logDebug(
+				"Dropping mention: max concurrent mentions reached",
+				"guild_id", event.GuildID,
+				"channel_id", event.ChannelID,
+				"user_id", event.UserID,
+				"message_id", event.MessageID,
+			)
+			return nil
+		}
+	}
+
+	// Enforce per-user cooldown silently.
+	if !uc.allowUserMention(event.UserID) {
+		uc.logDebug(
+			"Ignoring mention inside per-user cooldown",
+			"guild_id", event.GuildID,
+			"channel_id", event.ChannelID,
+			"user_id", event.UserID,
+			"message_id", event.MessageID,
+		)
+		return nil
+	}
+
 	if uc.mentionTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, uc.mentionTimeout)
 		defer cancel()
-	}
-
-	// Validate incoming event.
-	if err := event.Validate(); err != nil {
-		return fmt.Errorf("validate mention event: %w", err)
 	}
 
 	if uc.maxMessages <= 0 {

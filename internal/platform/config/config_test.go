@@ -20,6 +20,8 @@ func unsetRelevantEnv(t *testing.T) {
 		"LLM_MODEL",
 		"CONVERSATION_TIMEOUT",
 		"MENTION_TIMEOUT",
+		"MENTION_USER_COOLDOWN",
+		"MAX_CONCURRENT_MENTIONS",
 		"MAX_CONTEXT_MESSAGES",
 		"MEMORY_ENABLED",
 		"MEMORY_MAX_RETRIEVED_MEMORIES",
@@ -50,6 +52,14 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 
 	if cfg.Conversation.MentionTimeout != 60*time.Second {
 		t.Errorf("MentionTimeout = %v, want 60s", cfg.Conversation.MentionTimeout)
+	}
+
+	if cfg.Conversation.UserCooldown != 5*time.Second {
+		t.Errorf("UserCooldown = %v, want 5s", cfg.Conversation.UserCooldown)
+	}
+
+	if cfg.Conversation.MaxConcurrentMentions != 8 {
+		t.Errorf("MaxConcurrentMentions = %d, want 8", cfg.Conversation.MaxConcurrentMentions)
 	}
 
 	if cfg.Conversation.MaxMessages != 15 {
@@ -86,6 +96,8 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	t.Setenv("LLM_MODEL", "model-x")
 	t.Setenv("CONVERSATION_TIMEOUT", "45s")
 	t.Setenv("MENTION_TIMEOUT", "90s")
+	t.Setenv("MENTION_USER_COOLDOWN", "10s")
+	t.Setenv("MAX_CONCURRENT_MENTIONS", "12")
 	t.Setenv("MAX_CONTEXT_MESSAGES", "20")
 	t.Setenv("MEMORY_ENABLED", "false")
 	t.Setenv("MEMORY_MAX_RETRIEVED_MEMORIES", "8")
@@ -110,6 +122,14 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 
 	if cfg.Conversation.MentionTimeout != 90*time.Second {
 		t.Errorf("MentionTimeout = %v, want 90s", cfg.Conversation.MentionTimeout)
+	}
+
+	if cfg.Conversation.UserCooldown != 10*time.Second {
+		t.Errorf("UserCooldown = %v, want 10s", cfg.Conversation.UserCooldown)
+	}
+
+	if cfg.Conversation.MaxConcurrentMentions != 12 {
+		t.Errorf("MaxConcurrentMentions = %d, want 12", cfg.Conversation.MaxConcurrentMentions)
 	}
 
 	if cfg.Conversation.MaxMessages != 20 {
@@ -161,6 +181,11 @@ func TestLoadFromEnvRejectsInvalidValues(t *testing.T) {
 		{name: "negative mention timeout", key: "MENTION_TIMEOUT", val: "-5s"},
 		{name: "mention timeout equal to conversation timeout", key: "MENTION_TIMEOUT", val: "30s"},
 		{name: "mention timeout less than conversation timeout", key: "MENTION_TIMEOUT", val: "20s"},
+		{name: "invalid user cooldown format", key: "MENTION_USER_COOLDOWN", val: "bad"},
+		{name: "negative user cooldown", key: "MENTION_USER_COOLDOWN", val: "-1s"},
+		{name: "non-int max concurrent mentions", key: "MAX_CONCURRENT_MENTIONS", val: "abc"},
+		{name: "zero max concurrent mentions", key: "MAX_CONCURRENT_MENTIONS", val: "0"},
+		{name: "negative max concurrent mentions", key: "MAX_CONCURRENT_MENTIONS", val: "-2"},
 		{name: "non-int max messages", key: "MAX_CONTEXT_MESSAGES", val: "abc"},
 		{name: "zero max messages", key: "MAX_CONTEXT_MESSAGES", val: "0"},
 		{name: "negative max messages", key: "MAX_CONTEXT_MESSAGES", val: "-1"},

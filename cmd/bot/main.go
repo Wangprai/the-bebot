@@ -439,6 +439,14 @@ func run() error {
 		return fmt.Errorf("configure mention timeout: %w", err)
 	}
 
+	if err := mentionHandler.SetUserCooldown(cfg.Conversation.UserCooldown); err != nil {
+		return fmt.Errorf("configure mention user cooldown: %w", err)
+	}
+
+	if err := mentionHandler.SetMaxConcurrentMentions(cfg.Conversation.MaxConcurrentMentions); err != nil {
+		return fmt.Errorf("configure max concurrent mentions: %w", err)
+	}
+
 	// Inject Mention Handler
 	if err := discordGateway.SetMentionHandler(mentionHandler); err != nil {
 		return fmt.Errorf("set mention handler: %w", err)

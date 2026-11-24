@@ -310,7 +310,7 @@ Configuration is loaded via `internal/platform/config` from environment variable
 - **Discord:** `DISCORD_BOT_TOKEN`
 - **MongoDB:** `MONGODB_URI`, `MONGODB_DATABASE`
 - **LLM:** `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
-- **Conversation:** `CONVERSATION_TIMEOUT` (default `30s`, LLM HTTP client timeout, must be `> 0`), `MENTION_TIMEOUT` (default `60s`, whole mention pipeline timeout, must be `> CONVERSATION_TIMEOUT`), `MAX_CONTEXT_MESSAGES` (default `15`, must be `> 0`)
+- **Conversation:** `CONVERSATION_TIMEOUT` (default `30s`, LLM HTTP client timeout, must be `> 0`), `MENTION_TIMEOUT` (default `60s`, whole mention pipeline timeout, must be `> CONVERSATION_TIMEOUT`), `MENTION_USER_COOLDOWN` (default `5s`, per-user mention cooldown, must be `>= 0`), `MAX_CONCURRENT_MENTIONS` (default `8`, global in-flight mention concurrency cap, must be `> 0`), `MAX_CONTEXT_MESSAGES` (default `15`, must be `> 0`)
 - **Memory:** `MEMORY_ENABLED` (default `true`), `MEMORY_MAX_RETRIEVED_MEMORIES` (default `5`, must be `> 0`), `MEMORY_WORKER_COUNT` (default `2`, must be `> 0`)
 - **Personality (optional overrides):** `PERSONALITY_NAME`, `PERSONALITY_EXTRA_TRAITS` (comma-separated), `PERSONALITY_LANGUAGE_POLICY`
 - **App / Logging:** `APP_NAME`, `APP_ENV`, `LOG_LEVEL` (default `info`)

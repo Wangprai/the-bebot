@@ -47,9 +47,11 @@ type LLMConfig struct {
 }
 
 type ConversationConfig struct {
-	Timeout        time.Duration
-	MentionTimeout time.Duration
-	MaxMessages    int
+	Timeout               time.Duration
+	MentionTimeout        time.Duration
+	MaxMessages           int
+	UserCooldown          time.Duration
+	MaxConcurrentMentions int
 }
 
 type MemoryConfig struct {
@@ -89,9 +91,11 @@ func LoadFromEnv() (*Config, error) {
 		},
 
 		Conversation: ConversationConfig{
-			Timeout:        30 * time.Second,
-			MentionTimeout: 60 * time.Second,
-			MaxMessages:    15,
+			Timeout:               30 * time.Second,
+			MentionTimeout:        60 * time.Second,
+			MaxMessages:           15,
+			UserCooldown:          5 * time.Second,
+			MaxConcurrentMentions: 8,
 		},
 
 		Memory: MemoryConfig{
@@ -119,6 +123,18 @@ func LoadFromEnv() (*Config, error) {
 
 	if cfg.Conversation.MentionTimeout, err = getDuration(
 		"MENTION_TIMEOUT", cfg.Conversation.MentionTimeout,
+	); err != nil {
+		return nil, err
+	}
+
+	if cfg.Conversation.UserCooldown, err = getDuration(
+		"MENTION_USER_COOLDOWN", cfg.Conversation.UserCooldown,
+	); err != nil {
+		return nil, err
+	}
+
+	if cfg.Conversation.MaxConcurrentMentions, err = getInt(
+		"MAX_CONCURRENT_MENTIONS", cfg.Conversation.MaxConcurrentMentions,
 	); err != nil {
 		return nil, err
 	}
@@ -169,6 +185,14 @@ func (c *Config) Validate() error {
 
 	if c.Conversation.MentionTimeout <= c.Conversation.Timeout {
 		return errors.New("MENTION_TIMEOUT must be greater than CONVERSATION_TIMEOUT")
+	}
+
+	if c.Conversation.UserCooldown < 0 {
+		return errors.New("MENTION_USER_COOLDOWN must be zero or greater")
+	}
+
+	if c.Conversation.MaxConcurrentMentions <= 0 {
+		return errors.New("MAX_CONCURRENT_MENTIONS must be greater than zero")
 	}
 
 	if c.Conversation.MaxMessages <= 0 {
