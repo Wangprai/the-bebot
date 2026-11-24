@@ -233,7 +233,7 @@ Memory (`internal/memory/`) retains useful long-term information and supplies it
 Implemented workflow:
 
 1. Receive a Discord mention and build conversation context.
-2. Retrieve up to `MEMORY_MAX_RETRIEVED_MEMORIES` (default `5`) relevant memories (`community` scope + speaking `member` scope) via the `MemoryRetriever` port, updating usage tracking (`usage_count`, `last_used_at`).
+2. Retrieve up to `MEMORY_MAX_RETRIEVED_MEMORIES` (default `5`) relevant memories (`community` scope + speaking `member` scope) via the `MemoryRetriever` port using MongoDB text-indexed relevance combined with importance, confidence (`>= MEMORY_MIN_CONFIDENCE`), and recency (falling back to importance when no text matches), enforcing community-scope corroboration (`source_user_ids` from `>= MEMORY_COMMUNITY_MIN_CORROBORATORS` distinct users or optional `MEMORY_COMMUNITY_HIGH_CONFIDENCE`), filtering expired low-importance unused memories, and updating usage tracking (`usage_count`, `last_used_at`, clearing `expires_at`).
 3. Include retrieved memories as JSON reference data with prompt-injection defense guidelines in the LLM system prompt.
 4. After replying, evaluate `CandidateRules` on the **trigger message only** (keeping earlier window messages as extraction context only; Thai/English preference, fact, and promise signals including Unicode curly apostrophes, minimum 12 runes, ignoring bot messages).
 5. Create a `MemoryCandidate` in MongoDB (`memory_candidates`), treating duplicate `(guild_id, message_id)` creation idempotently on redelivered events.
@@ -241,16 +241,16 @@ Implemented workflow:
 7. `MemoryCandidateProcessor` extracts structured memories via `llm.MemoryExtractor` (prompt schema includes `source_message_id`), validates each item with `MemoryValidator` (authoritative source user ID, non-bot source check, sensitive-pattern filtering), preserves valid sibling memories if another item in the batch is invalid, saves via candidate-level idempotency and content-based deduplication (`content_dedup_key`, advancing `importance` and `updated_at` to max on duplicates) to `memories`, and updates candidate status with ownership/lock verification (`UpdateProcessingResult`).
 8. A dedicated cleanup goroutine in `MemoryWorker` periodically invokes `CandidateRepository.DeleteExpired` without blocking candidate processing.
 
-### One-off deduplication cleanup for legacy data
+### One-off deduplication and near-duplicate consolidation
 
-For existing deployments created before `content_dedup_key` was introduced, a manual, idempotent cleanup helper is available (never executed automatically by `cmd/bot`):
+For existing deployments created before `content_dedup_key` was introduced, or to periodically merge near-duplicate memories, a manual, idempotent cleanup utility is available (never executed automatically by `cmd/bot`):
 
 ```bash
 # Dry-run (default, inspects without mutating):
 go run ./cmd/dedup-memories
 
-# Apply cleanup across all guilds (or add --guild <guild_id>):
-go run ./cmd/dedup-memories --apply
+# Apply exact cleanup + near-duplicate consolidation across all guilds (or add --guild <guild_id>):
+go run ./cmd/dedup-memories --apply --consolidate --similarity 0.70
 ```
 
 ---
@@ -284,7 +284,7 @@ MongoDB collections and indexes ensured at startup:
 
 | Collection | Responsibility | Key Indexes | Status |
 |---|---|---|---|
-| `memories` | Long-term memories (`community` & `member` scopes) | `idx_memories_community_relevance`, `idx_memories_member_relevance`, unique partial `idx_memories_idempotency`, unique partial `idx_memories_candidate_item`, unique partial `idx_memories_content_dedup` | Implemented & Verified (MongoDB tests) |
+| `memories` | Long-term memories (`community` & `member` scopes) | `idx_memories_community_relevance`, `idx_memories_member_relevance`, unique partial `idx_memories_idempotency`, unique partial `idx_memories_candidate_item`, unique partial `idx_memories_content_dedup`, text index `idx_memories_text_search`, partial TTL `idx_memories_expires_at` | Implemented & Verified (MongoDB tests) |
 | `memory_candidates` | Durable candidate queue and processing leases | unique `(guild_id, message_id)`, pending/retry index, processing lock index, expiration index | Implemented & Verified (MongoDB tests) |
 | `conversation_contexts` | Latest conversation context snapshot per `(guild_id, channel_id)` | unique `(guild_id, channel_id)`, TTL index on `expires_at` (`expireAfterSeconds: 0`) | Implemented & Verified (MongoDB tests) |
 | `community_moods` | Persistent guild-level mood state | unique `guild_id` | Implemented & Verified (MongoDB tests) |
@@ -328,7 +328,7 @@ Configuration is loaded via `internal/platform/config` from environment variable
 - **MongoDB:** `MONGODB_URI`, `MONGODB_DATABASE`
 - **LLM:** `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_MAX_TOKENS` (default `600`, must be `> 0`)
 - **Conversation:** `CONVERSATION_TIMEOUT` (default `30s`, LLM HTTP client timeout, must be `> 0`), `MENTION_TIMEOUT` (default `60s`, whole mention pipeline timeout, must be `> CONVERSATION_TIMEOUT`), `MENTION_USER_COOLDOWN` (default `5s`, per-user mention cooldown, must be `>= 0`), `MAX_CONCURRENT_MENTIONS` (default `8`, global in-flight mention concurrency cap, must be `> 0`), `MAX_CONTEXT_MESSAGES` (default `15`, must be `> 0`)
-- **Memory:** `MEMORY_ENABLED` (default `true`), `MEMORY_MAX_RETRIEVED_MEMORIES` (default `5`, must be `> 0`), `MEMORY_WORKER_COUNT` (default `2`, must be `> 0`)
+- **Memory:** `MEMORY_ENABLED` (default `true`), `MEMORY_MAX_RETRIEVED_MEMORIES` (default `5`, must be `> 0`), `MEMORY_WORKER_COUNT` (default `2`, must be `> 0`), `MEMORY_MIN_CONFIDENCE` (default `0.5`, range `0..1`), `MEMORY_COMMUNITY_MIN_CORROBORATORS` (default `2`, distinct users required before community-scope memories are retrievable, must be `>= 1`), `MEMORY_COMMUNITY_HIGH_CONFIDENCE` (default `0` disabled; optional explicit confidence threshold in `0..1` to allow single-user community memory), `MEMORY_UNUSED_TTL` (default `0s` off-safe; optional expiration duration for unused low-importance memories), `MEMORY_UNUSED_TTL_MAX_IMPORTANCE` (default `2`, range `1..5`)
 - **Mood:** `MOOD_USER_COOLDOWN` (default `2m`, per-user cooldown on persistent community mood changes, must be `>= 0`)
 - **Personality (optional overrides):** `PERSONALITY_NAME`, `PERSONALITY_EXTRA_TRAITS` (comma-separated), `PERSONALITY_LANGUAGE_POLICY`
 - **App / Logging:** `APP_NAME`, `APP_ENV`, `LOG_LEVEL` (default `info`)
