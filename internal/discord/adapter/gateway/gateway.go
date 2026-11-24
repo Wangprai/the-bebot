@@ -10,6 +10,8 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+const defaultShutdownTimeout = 30 * time.Second
+
 type Gateway struct {
 	session *discordgo.Session
 	logger  *slog.Logger
@@ -23,7 +25,8 @@ type Gateway struct {
 	lifecycleMu sync.Mutex
 	handlerWG   sync.WaitGroup
 
-	botUserID string
+	botUserID       string
+	shutdownTimeout time.Duration
 
 	started bool
 	closed  bool
@@ -56,9 +59,10 @@ func NewGateway(
 			discordgo.IntentsMessageContent
 
 	g := &Gateway{
-		session:        session,
-		logger:         logger,
-		mentionHandler: mentionHandler,
+		session:         session,
+		logger:          logger,
+		mentionHandler:  mentionHandler,
+		shutdownTimeout: defaultShutdownTimeout,
 	}
 
 	session.AddHandler(g.handleReady)
@@ -118,7 +122,7 @@ func (g *Gateway) Start(ctx context.Context) error {
 		return fmt.Errorf("gateway context is canceled: %w", err)
 	}
 
-	g.ctx, g.cancel = context.WithCancel(ctx)
+	g.ctx, g.cancel = g.newHandlerContext(ctx)
 	g.started = true
 
 	g.mu.Unlock()
@@ -144,25 +148,27 @@ func (g *Gateway) Start(ctx context.Context) error {
 	return nil
 }
 
+func (g *Gateway) newHandlerContext(
+	parent context.Context,
+) (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.WithoutCancel(parent))
+}
+
 func (g *Gateway) Close() error {
 	g.closeOnce.Do(func() {
 		g.lifecycleMu.Lock()
 		defer g.lifecycleMu.Unlock()
 
+		// 1. Stop accepting new events without canceling in-flight handlers yet.
 		g.mu.Lock()
-
 		g.closed = true
-
 		cancel := g.cancel
 		g.cancel = nil
 		g.ctx = nil
-
+		timeout := g.shutdownTimeout
 		g.mu.Unlock()
 
-		if cancel != nil {
-			cancel()
-		}
-
+		// 2. Close Discord session.
 		if g.session != nil {
 			if err := g.session.Close(); err != nil {
 				g.closeErr = fmt.Errorf(
@@ -172,6 +178,7 @@ func (g *Gateway) Close() error {
 			}
 		}
 
+		// 3. Wait for in-flight handlers to finish (up to shutdown timeout).
 		done := make(chan struct{})
 
 		go func() {
@@ -179,7 +186,11 @@ func (g *Gateway) Close() error {
 			close(done)
 		}()
 
-		timer := time.NewTimer(30 * time.Second)
+		if timeout <= 0 {
+			timeout = defaultShutdownTimeout
+		}
+
+		timer := time.NewTimer(timeout)
 		defer timer.Stop()
 
 		select {
@@ -192,6 +203,11 @@ func (g *Gateway) Close() error {
 					"timeout waiting for mention handlers to finish",
 				)
 			}
+		}
+
+		// 4. Only now cancel the handler context.
+		if cancel != nil {
+			cancel()
 		}
 
 		g.logger.Info("Discord gateway disconnected")
@@ -247,10 +263,11 @@ func (g *Gateway) handleMessageCreate(
 	botUserID := g.botUserID
 	ctx := g.ctx
 	handler := g.mentionHandler
+	closed := g.closed
 	g.mu.RUnlock()
 
-	// Ignore messages before the gateway is started.
-	if ctx == nil {
+	// Ignore messages before the gateway is started or once closed.
+	if closed || ctx == nil {
 		return
 	}
 

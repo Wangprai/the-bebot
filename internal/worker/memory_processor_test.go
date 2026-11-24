@@ -56,6 +56,7 @@ func (m *mockMemoryValidator) Validate(
 type mockProcessorMemoryRepository struct {
 	saved   []core.Memory
 	saveErr error
+	onSave  func()
 }
 
 func (m *mockProcessorMemoryRepository) Save(
@@ -67,6 +68,9 @@ func (m *mockProcessorMemoryRepository) Save(
 	}
 
 	m.saved = append(m.saved, memory)
+	if m.onSave != nil {
+		m.onSave()
+	}
 	return memory.ID, nil
 }
 
@@ -110,9 +114,11 @@ func (m *mockProcessorMemoryRepository) DeleteByID(
 }
 
 type mockProcessorCandidateRepository struct {
-	updated          []core.MemoryCandidate
-	updatedWorkerIDs []string
-	updateErr        error
+	updated            []core.MemoryCandidate
+	updatedWorkerIDs   []string
+	updateErr          error
+	lastUpdateDeadline time.Time
+	lastUpdateHasDL    bool
 }
 
 func (m *mockProcessorCandidateRepository) Create(
@@ -156,6 +162,7 @@ func (m *mockProcessorCandidateRepository) UpdateProcessingResult(
 		return m.updateErr
 	}
 
+	m.lastUpdateDeadline, m.lastUpdateHasDL = ctx.Deadline()
 	m.updated = append(m.updated, candidate)
 	m.updatedWorkerIDs = append(m.updatedWorkerIDs, expectedWorkerID)
 
@@ -666,11 +673,68 @@ func TestMemoryCandidateProcessorContextCanceledDuringExtraction(t *testing.T) {
 		)
 	}
 
-	if len(candidateRepo.updated) != 0 {
+	if len(candidateRepo.updated) != 1 {
 		t.Fatalf(
-			"expected no persisted candidate, got %d",
+			"expected candidate final state to be persisted after cancellation, got %d updates",
 			len(candidateRepo.updated),
 		)
+	}
+
+	if candidateRepo.updated[0].Status != core.CandidateStatusFailed {
+		t.Errorf("persisted status = %s, want failed", candidateRepo.updated[0].Status)
+	}
+
+	if candidateRepo.updated[0].WorkerID != "" {
+		t.Error("expected worker ID to be cleared on persisted failed candidate")
+	}
+
+	if !candidateRepo.lastUpdateHasDL {
+		t.Error("expected short-lived timeout deadline on final-state persistence context")
+	}
+}
+
+func TestMemoryCandidateProcessorPersistsCompletedStateAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	memory := newProcessorTestMemory(t)
+	extractionUseCase := newProcessorTestExtractor(
+		[]core.ExtractedMemory{
+			{
+				Scope:           core.MemoryScopeMember,
+				Type:            core.MemoryTypePreference,
+				Content:         "User likes Go programming",
+				Importance:      3,
+				Confidence:      0.9,
+				SourceMessageID: "message-123",
+			},
+		},
+		nil,
+		memory,
+	)
+
+	// Cancel worker context immediately after memory Save completes, before complete() writes final state.
+	memoryRepo := &mockProcessorMemoryRepository{
+		onSave: cancel,
+	}
+	candidateRepo := &mockProcessorCandidateRepository{}
+
+	processor, err := NewMemoryCandidateProcessor(
+		extractionUseCase,
+		memoryRepo,
+		candidateRepo,
+		core.NewCandidateService(),
+	)
+	if err != nil {
+		t.Fatalf("create processor: %v", err)
+	}
+
+	if err := processor.Process(ctx, newProcessorTestCandidate(t)); err != nil {
+		t.Fatalf("expected Process() to persist completed state after cancellation, got %v", err)
+	}
+
+	if len(candidateRepo.updated) != 1 || candidateRepo.updated[0].Status != core.CandidateStatusCompleted {
+		t.Fatalf("expected completed candidate persisted, got %+v", candidateRepo.updated)
 	}
 }
 

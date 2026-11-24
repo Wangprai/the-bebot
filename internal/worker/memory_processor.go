@@ -11,10 +11,15 @@ import (
 )
 
 const (
-	defaultMaxAttempts = 5
-	defaultRetryDelay  = time.Minute
-	maxRetryDelay      = 30 * time.Minute
+	defaultMaxAttempts     = 5
+	defaultRetryDelay      = time.Minute
+	maxRetryDelay          = 30 * time.Minute
+	finalStateWriteTimeout = 5 * time.Second
 )
+
+func persistStateContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), finalStateWriteTimeout)
+}
 
 type MemoryCandidateProcessor struct {
 	extractionUseCase   *memoryapp.ExtractMemoriesUseCase
@@ -172,8 +177,11 @@ func (p *MemoryCandidateProcessor) complete(
 		return fmt.Errorf("complete candidate: %w", err)
 	}
 
+	writeCtx, cancel := persistStateContext(ctx)
+	defer cancel()
+
 	if err := p.candidateRepository.UpdateProcessingResult(
-		ctx,
+		writeCtx,
 		updated,
 		workerID,
 	); err != nil {
@@ -195,8 +203,11 @@ func (p *MemoryCandidateProcessor) reject(
 		return fmt.Errorf("reject candidate: %w", err)
 	}
 
+	writeCtx, cancel := persistStateContext(ctx)
+	defer cancel()
+
 	if err := p.candidateRepository.UpdateProcessingResult(
-		ctx,
+		writeCtx,
 		updated,
 		workerID,
 	); err != nil {
@@ -236,8 +247,11 @@ func (p *MemoryCandidateProcessor) fail(
 		)
 	}
 
+	writeCtx, cancel := persistStateContext(ctx)
+	defer cancel()
+
 	if err := p.candidateRepository.UpdateProcessingResult(
-		ctx,
+		writeCtx,
 		updated,
 		workerID,
 	); err != nil {

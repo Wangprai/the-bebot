@@ -466,6 +466,17 @@ func run() error {
 	<-ctx.Done()
 
 	appLogger.Info("Shutdown signal received")
+
+	// Close Discord gateway first so no new mentions arrive and in-flight handlers
+	// complete while MongoDB is still connected; deferred worker Stop and DB Close
+	// run afterward.
+	if err := discordGateway.Close(); err != nil {
+		appLogger.Error(
+			"Failed to close Discord gateway",
+			"error", err,
+		)
+	}
+
 	appLogger.Info("The Bebot stopped")
 
 	return nil

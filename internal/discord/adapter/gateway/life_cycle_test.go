@@ -269,3 +269,185 @@ func TestHandleMessageCreateIgnoresBotAuthors(t *testing.T) {
 		})
 	}
 }
+
+type contextObservingMentionHandler struct {
+	started          chan struct{}
+	release          chan struct{}
+	canceledEarly    chan struct{}
+	completedCleanly chan struct{}
+	capturedCtx      chan context.Context
+}
+
+func (h *contextObservingMentionHandler) HandleMention(
+	ctx context.Context,
+	event core.MentionEvent,
+) error {
+	h.capturedCtx <- ctx
+	h.started <- struct{}{}
+
+	select {
+	case <-ctx.Done():
+		close(h.canceledEarly)
+		return ctx.Err()
+	case <-h.release:
+		if ctx.Err() != nil {
+			close(h.canceledEarly)
+			return ctx.Err()
+		}
+		close(h.completedCleanly)
+		return nil
+	}
+}
+
+func TestCloseLetsInFlightHandlerFinishBeforeCancelingContext(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	handler := &contextObservingMentionHandler{
+		started:          make(chan struct{}, 1),
+		release:          make(chan struct{}),
+		canceledEarly:    make(chan struct{}),
+		completedCleanly: make(chan struct{}),
+		capturedCtx:      make(chan context.Context, 1),
+	}
+
+	g, err := NewGateway("test-token", logger, handler)
+	if err != nil {
+		t.Fatalf("NewGateway() error = %v", err)
+	}
+
+	signalCtx, signalCancel := context.WithCancel(context.Background())
+
+	g.mu.Lock()
+	g.ctx, g.cancel = g.newHandlerContext(signalCtx)
+	g.started = true
+	g.botUserID = "bot"
+	g.mu.Unlock()
+
+	event := &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "message-graceful-1",
+			GuildID:   "guild-1",
+			ChannelID: "channel-1",
+			Content:   "<@bot> hello",
+			Timestamp: time.Now(),
+			Author:    &discordgo.User{ID: "user-1"},
+			Mentions:  []*discordgo.User{{ID: "bot"}},
+		},
+	}
+
+	go g.handleMessageCreate(nil, event)
+
+	var handlerCtx context.Context
+	select {
+	case handlerCtx = <-handler.capturedCtx:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not receive context")
+	}
+
+	select {
+	case <-handler.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	// Simulate SIGINT canceling the parent signal context: handler context MUST remain live.
+	signalCancel()
+
+	if handlerCtx.Err() != nil {
+		t.Fatalf("signal cancel must not cancel handler context, got %v", handlerCtx.Err())
+	}
+
+	// Start Close(): must stop new events and wait WITHOUT canceling handlerCtx yet.
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- g.Close()
+	}()
+
+	select {
+	case <-handler.canceledEarly:
+		t.Fatal("Close() canceled handler context before in-flight handler finished")
+	case err := <-closeDone:
+		t.Fatalf("Close() returned before in-flight handler finished: %v", err)
+	case <-time.After(80 * time.Millisecond):
+	}
+
+	// Release in-flight handler and verify it completes with a non-canceled context.
+	close(handler.release)
+
+	select {
+	case <-handler.completedCleanly:
+	case <-handler.canceledEarly:
+		t.Fatal("handler saw canceled context before completing")
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not complete")
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() did not return after handler finished")
+	}
+
+	// Only AFTER Close() finishes should the handler context be canceled.
+	select {
+	case <-handlerCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("expected handler context to be canceled after Close() completed")
+	}
+}
+
+func TestCloseCancelsHandlerContextAfterShutdownTimeout(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	handler := &contextObservingMentionHandler{
+		started:          make(chan struct{}, 1),
+		release:          make(chan struct{}),
+		canceledEarly:    make(chan struct{}),
+		completedCleanly: make(chan struct{}),
+		capturedCtx:      make(chan context.Context, 1),
+	}
+
+	g, err := NewGateway("test-token", logger, handler)
+	if err != nil {
+		t.Fatalf("NewGateway() error = %v", err)
+	}
+	g.shutdownTimeout = 40 * time.Millisecond
+
+	g.mu.Lock()
+	g.ctx, g.cancel = g.newHandlerContext(context.Background())
+	g.started = true
+	g.botUserID = "bot"
+	g.mu.Unlock()
+
+	event := &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "message-timeout-1",
+			GuildID:   "guild-1",
+			ChannelID: "channel-1",
+			Content:   "<@bot> stuck",
+			Timestamp: time.Now(),
+			Author:    &discordgo.User{ID: "user-1"},
+			Mentions:  []*discordgo.User{{ID: "bot"}},
+		},
+	}
+
+	go g.handleMessageCreate(nil, event)
+
+	<-handler.capturedCtx
+	<-handler.started
+
+	err = g.Close()
+	if err == nil {
+		t.Fatal("expected timeout error from Close()")
+	}
+
+	// After timeout expires, Close() must cancel the handler context so stuck work terminates.
+	select {
+	case <-handler.canceledEarly:
+	case <-time.After(time.Second):
+		t.Fatal("expected handler context to be canceled after Close() timed out")
+	}
+}
