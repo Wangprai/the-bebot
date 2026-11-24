@@ -24,6 +24,7 @@ func (a *MoodResolverAdapter) ResolveMood(
 	ctx context.Context,
 	guildID string,
 	channelID string,
+	userID string,
 	triggerContent string,
 ) (conversationcore.MoodContext, error) {
 	if a == nil || a.service == nil {
@@ -34,6 +35,7 @@ func (a *MoodResolverAdapter) ResolveMood(
 		ctx,
 		guildID,
 		channelID,
+		userID,
 		triggerContent,
 	)
 	if err != nil {

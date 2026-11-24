@@ -342,6 +342,10 @@ func run() error {
 		return fmt.Errorf("initialize mood service: %w", err)
 	}
 
+	if err := moodService.SetUserCooldown(cfg.Mood.UserCooldown); err != nil {
+		return fmt.Errorf("configure mood user cooldown: %w", err)
+	}
+
 	moodResolver := moodadapter.NewMoodResolverAdapter(moodService)
 
 	// Initialize Community and Member Metadata Repositories

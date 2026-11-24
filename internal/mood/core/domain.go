@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -199,101 +200,90 @@ const (
 )
 
 type signalRule struct {
-	signal Signal
-	cues   []string
+	signal       Signal
+	thaiCues     []string
+	latinPattern *regexp.Regexp
 }
+
+var (
+	urlPattern          = regexp.MustCompile(`https?://\S+`)
+	mentionTokenPattern = regexp.MustCompile(`<@!?[0-9A-Za-z_-]+>`)
+)
 
 var interactionSignalRules = []signalRule{
 	{
 		signal: SignalHostile,
-		cues: []string{
+		thaiCues: []string{
 			"หุบปาก",
 			"น่ารำคาญ",
 			"ไอ้โง่",
-			"shut up",
-			"stupid",
-			"idiot",
-			"annoying",
-			"go away",
-			"useless",
 		},
+		latinPattern: regexp.MustCompile(`\b(?:shut\s+up|stupid|idiot|annoying|go\s+away|useless)\b`),
 	},
 	{
 		signal: SignalSarcastic,
-		cues: []string{
+		thaiCues: []string{
 			"เก่งจังเลยนะ",
 			"ฉลาดมากมั้ง",
 			"สุดยอดเลยมั้ง",
-			"yeah right",
-			"sure buddy",
-			"oh really",
-			"totally not",
-			"/s",
 		},
+		latinPattern: regexp.MustCompile(`\b(?:yeah\s+right|sure\s+buddy|oh\s+really|totally\s+not)\b`),
 	},
 	{
 		signal: SignalTired,
-		cues: []string{
+		thaiCues: []string{
 			"ง่วง",
 			"เหนื่อย",
 			"หมดแรง",
 			"เพลีย",
-			"sleepy",
-			"tired",
-			"exhausted",
-			"burnt out",
 		},
+		latinPattern: regexp.MustCompile(`\b(?:sleepy|tired|exhausted|burnt\s+out)\b`),
 	},
 	{
 		signal: SignalGreeting,
-		cues: []string{
+		thaiCues: []string{
 			"สวัสดี",
 			"หวัดดี",
 			"ขอบคุณ",
 			"เก่งมาก",
 			"น่ารัก",
 			"สุดยอด",
-			"good morning",
-			"good bot",
-			"thank you",
-			"thanks",
-			"awesome",
-			"great job",
-			"hello",
 		},
+		latinPattern: regexp.MustCompile(`\b(?:good\s+morning|good\s+bot|thank\s+you|thanks|awesome|great\s+job|hello)\b`),
 	},
 	{
 		signal: SignalPlayful,
-		cues: []string{
+		thaiCues: []string{
 			"ฮ่าๆ",
-			"555",
 			"ขำ",
 			"ตลก",
 			"แกล้ง",
 			"หยอก",
-			"haha",
-			"lmao",
-			"lol",
-			"rofl",
-			"prank",
-			"tease",
 		},
+		// Match Latin playful words on word boundaries and "555+" only as a standalone token.
+		latinPattern: regexp.MustCompile(`(?:\b(?:haha|lmao|lol|rofl|prank|tease)\b|(?:^|[^0-9A-Za-z_\-/])5{3,}(?:$|[^0-9A-Za-z_\-/]))`),
 	},
 }
 
 // DetectSignal deterministically identifies a clear interaction signal from message text.
 // Neutral or ambiguous messages return SignalNone.
 func DetectSignal(content string) Signal {
-	normalized := strings.ToLower(strings.TrimSpace(content))
+	cleaned := urlPattern.ReplaceAllString(content, " ")
+	cleaned = mentionTokenPattern.ReplaceAllString(cleaned, " ")
+	normalized := strings.ToLower(strings.TrimSpace(cleaned))
 	if normalized == "" {
 		return SignalNone
 	}
 
 	for _, rule := range interactionSignalRules {
-		for _, cue := range rule.cues {
+		for _, cue := range rule.thaiCues {
 			if strings.Contains(normalized, cue) {
 				return rule.signal
 			}
+		}
+
+		if rule.latinPattern != nil && rule.latinPattern.MatchString(normalized) {
+			return rule.signal
 		}
 	}
 

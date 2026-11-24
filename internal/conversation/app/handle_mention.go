@@ -412,6 +412,7 @@ func (uc *HandleMentionUseCase) HandleMention(
 			ctx,
 			event.GuildID,
 			event.ChannelID,
+			event.UserID,
 			event.Content,
 		)
 		if err != nil {

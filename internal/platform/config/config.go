@@ -20,9 +20,14 @@ type Config struct {
 
 	Conversation ConversationConfig
 	Memory       MemoryConfig
+	Mood         MoodConfig
 	Personality  PersonalityConfig
 
 	LogLevel string
+}
+
+type MoodConfig struct {
+	UserCooldown time.Duration
 }
 
 type PersonalityConfig struct {
@@ -106,6 +111,10 @@ func LoadFromEnv() (*Config, error) {
 			WorkerCount:          2,
 		},
 
+		Mood: MoodConfig{
+			UserCooldown: 2 * time.Minute,
+		},
+
 		Personality: PersonalityConfig{
 			Name:           strings.TrimSpace(getEnv("PERSONALITY_NAME", "")),
 			ExtraTraits:    getCSV("PERSONALITY_EXTRA_TRAITS"),
@@ -171,6 +180,12 @@ func LoadFromEnv() (*Config, error) {
 		return nil, err
 	}
 
+	if cfg.Mood.UserCooldown, err = getDuration(
+		"MOOD_USER_COOLDOWN", cfg.Mood.UserCooldown,
+	); err != nil {
+		return nil, err
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -217,6 +232,10 @@ func (c *Config) Validate() error {
 
 	if c.Memory.WorkerCount <= 0 {
 		return errors.New("MEMORY_WORKER_COUNT must be greater than zero")
+	}
+
+	if c.Mood.UserCooldown < 0 {
+		return errors.New("MOOD_USER_COOLDOWN must be zero or greater")
 	}
 
 	return nil

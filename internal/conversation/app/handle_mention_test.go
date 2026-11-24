@@ -1026,6 +1026,7 @@ type mockMoodResolver struct {
 
 	receivedGuildID   string
 	receivedChannelID string
+	receivedUserID    string
 	receivedContent   string
 }
 
@@ -1033,11 +1034,13 @@ func (m *mockMoodResolver) ResolveMood(
 	ctx context.Context,
 	guildID string,
 	channelID string,
+	userID string,
 	triggerContent string,
 ) (core.MoodContext, error) {
 	m.called = true
 	m.receivedGuildID = guildID
 	m.receivedChannelID = channelID
+	m.receivedUserID = userID
 	m.receivedContent = triggerContent
 	return m.mood, m.err
 }
@@ -1074,6 +1077,7 @@ func TestHandleMentionInjectsMoodContext(t *testing.T) {
 
 	if resolver.receivedGuildID != event.GuildID ||
 		resolver.receivedChannelID != event.ChannelID ||
+		resolver.receivedUserID != event.UserID ||
 		resolver.receivedContent != event.Content {
 		t.Errorf("unexpected mood resolver inputs: %+v", resolver)
 	}

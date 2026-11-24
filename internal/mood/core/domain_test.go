@@ -154,8 +154,20 @@ func TestDetectSignal(t *testing.T) {
 		{name: "Thai hostility", content: "<@bot> หุบปากไปเลย", want: SignalHostile},
 		{name: "Thai tiredness", content: "<@bot> วันนี้ง่วงมาก หมดแรงแล้ว", want: SignalTired},
 		{name: "English tiredness", content: "<@bot> I am so tired today", want: SignalTired},
+		{name: "Standalone 555", content: "<@bot> 555", want: SignalPlayful},
+		{name: "Standalone 5555", content: "<@bot> 5555!", want: SignalPlayful},
 		{name: "Neutral question causes no signal", content: "<@bot> what time does the game start?", want: SignalNone},
 		{name: "Ambiguous short mention causes no signal", content: "<@bot> hey", want: SignalNone},
+		// False positive regressions:
+		{name: "URL path containing /s does not trigger sarcasm", content: "check https://example.com/s/article please", want: SignalNone},
+		{name: "Removed /s cue does not trigger sarcasm", content: "nice job /s", want: SignalNone},
+		{name: "URL containing tired does not trigger tired", content: "read https://example.com/tired-guide", want: SignalNone},
+		{name: "retired does not match tired", content: "my dad retired last year", want: SignalNone},
+		{name: "15555 does not match 555", content: "order number 15555 arrived", want: SignalNone},
+		{name: "5550 does not match 555", content: "port 5550 is open", want: SignalNone},
+		{name: "phone with 555 does not match 555", content: "call 085-555-1234", want: SignalNone},
+		{name: "lollipop does not match lol", content: "I bought a lollipop", want: SignalNone},
+		{name: "thanksgiving does not match thanks", content: "happy thanksgiving dinner", want: SignalNone},
 	}
 
 	for _, tt := range tests {

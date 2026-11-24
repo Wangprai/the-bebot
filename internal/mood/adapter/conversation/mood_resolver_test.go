@@ -40,6 +40,7 @@ func TestMoodResolverAdapterSuccess(t *testing.T) {
 		context.Background(),
 		"guild-001",
 		"channel-001",
+		"user-001",
 		"<@bebot> thanks, awesome!",
 	)
 	if err != nil {
@@ -57,12 +58,12 @@ func TestMoodResolverAdapterSuccess(t *testing.T) {
 
 func TestMoodResolverAdapterRejectsNil(t *testing.T) {
 	var nilAdapter *MoodResolverAdapter
-	if _, err := nilAdapter.ResolveMood(context.Background(), "g1", "c1", "hi"); err == nil {
+	if _, err := nilAdapter.ResolveMood(context.Background(), "g1", "c1", "u1", "hi"); err == nil {
 		t.Fatal("expected error for nil adapter")
 	}
 
 	adapter := NewMoodResolverAdapter(nil)
-	if _, err := adapter.ResolveMood(context.Background(), "g1", "c1", "hi"); err == nil {
+	if _, err := adapter.ResolveMood(context.Background(), "g1", "c1", "u1", "hi"); err == nil {
 		t.Fatal("expected error for nil service")
 	}
 }

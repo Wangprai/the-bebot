@@ -27,6 +27,7 @@ func unsetRelevantEnv(t *testing.T) {
 		"MEMORY_ENABLED",
 		"MEMORY_MAX_RETRIEVED_MEMORIES",
 		"MEMORY_WORKER_COUNT",
+		"MOOD_USER_COOLDOWN",
 		"PERSONALITY_NAME",
 		"PERSONALITY_EXTRA_TRAITS",
 		"PERSONALITY_LANGUAGE_POLICY",
@@ -83,6 +84,10 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 		t.Errorf("WorkerCount = %d, want 2", cfg.Memory.WorkerCount)
 	}
 
+	if cfg.Mood.UserCooldown != 2*time.Minute {
+		t.Errorf("Mood.UserCooldown = %v, want 2m", cfg.Mood.UserCooldown)
+	}
+
 	if cfg.LogLevel != "info" {
 		t.Errorf("LogLevel = %q, want info", cfg.LogLevel)
 	}
@@ -108,6 +113,7 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 	t.Setenv("MEMORY_ENABLED", "false")
 	t.Setenv("MEMORY_MAX_RETRIEVED_MEMORIES", "8")
 	t.Setenv("MEMORY_WORKER_COUNT", "4")
+	t.Setenv("MOOD_USER_COOLDOWN", "5m")
 	t.Setenv("PERSONALITY_NAME", "Custom Bebot")
 	t.Setenv("PERSONALITY_EXTRA_TRAITS", "curious, sharp , ")
 	t.Setenv("PERSONALITY_LANGUAGE_POLICY", "Speak Thai naturally")
@@ -156,6 +162,10 @@ func TestLoadFromEnvOverrides(t *testing.T) {
 
 	if cfg.Memory.WorkerCount != 4 {
 		t.Errorf("WorkerCount = %d, want 4", cfg.Memory.WorkerCount)
+	}
+
+	if cfg.Mood.UserCooldown != 5*time.Minute {
+		t.Errorf("Mood.UserCooldown = %v, want 5m", cfg.Mood.UserCooldown)
 	}
 
 	if cfg.Personality.Name != "Custom Bebot" {
@@ -209,6 +219,8 @@ func TestLoadFromEnvRejectsInvalidValues(t *testing.T) {
 		{name: "non-int worker count", key: "MEMORY_WORKER_COUNT", val: "abc"},
 		{name: "zero worker count", key: "MEMORY_WORKER_COUNT", val: "0"},
 		{name: "negative worker count", key: "MEMORY_WORKER_COUNT", val: "-3"},
+		{name: "invalid mood user cooldown", key: "MOOD_USER_COOLDOWN", val: "bad"},
+		{name: "negative mood user cooldown", key: "MOOD_USER_COOLDOWN", val: "-10s"},
 	}
 
 	for _, tt := range tests {

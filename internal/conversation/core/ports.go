@@ -91,6 +91,7 @@ type MoodResolver interface {
 		ctx context.Context,
 		guildID string,
 		channelID string,
+		userID string,
 		triggerContent string,
 	) (MoodContext, error)
 }
