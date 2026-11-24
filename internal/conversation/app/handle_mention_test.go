@@ -84,20 +84,23 @@ type mockMessageSender struct {
 	called  bool
 	content string
 
-	receivedGuildID   string
-	receivedChannelID string
+	receivedGuildID          string
+	receivedChannelID        string
+	receivedReplyToMessageID string
 }
 
 func (m *mockMessageSender) Send(
 	ctx context.Context,
 	guildID string,
 	channelID string,
+	replyToMessageID string,
 	content string,
 ) (core.Message, error) {
 	m.called = true
 	m.content = content
 	m.receivedGuildID = guildID
 	m.receivedChannelID = channelID
+	m.receivedReplyToMessageID = replyToMessageID
 
 	return core.Message{}, m.err
 }
@@ -212,6 +215,57 @@ func TestHandleMentionSuccess(t *testing.T) {
 
 	if sender.content != "Hello! What's up?" {
 		t.Errorf("unexpected sent content: %s", sender.content)
+	}
+
+	if sender.receivedReplyToMessageID != event.MessageID {
+		t.Errorf("replyToMessageID = %q, want %q", sender.receivedReplyToMessageID, event.MessageID)
+	}
+}
+
+type mockTypingIndicator struct {
+	called    int
+	channelID string
+	err       error
+}
+
+func (m *mockTypingIndicator) StartTyping(
+	ctx context.Context,
+	channelID string,
+) error {
+	m.called++
+	m.channelID = channelID
+	return m.err
+}
+
+func TestHandleMentionShowsTypingWhileGenerating(t *testing.T) {
+	useCase, _, _, _, sender, event := newTestUseCase()
+
+	typing := &mockTypingIndicator{
+		err: errors.New("transient typing failure should not block reply"),
+	}
+
+	if err := useCase.SetTypingIndicator(nil); err == nil {
+		t.Fatal("expected error for nil typing indicator")
+	}
+
+	if err := useCase.SetTypingIndicator(typing); err != nil {
+		t.Fatalf("SetTypingIndicator() error = %v", err)
+	}
+
+	if err := useCase.HandleMention(context.Background(), event); err != nil {
+		t.Fatalf("HandleMention() error = %v", err)
+	}
+
+	if typing.called == 0 {
+		t.Fatal("expected StartTyping to be called while generating response")
+	}
+
+	if typing.channelID != event.ChannelID {
+		t.Errorf("typing channelID = %q, want %q", typing.channelID, event.ChannelID)
+	}
+
+	if !sender.called {
+		t.Error("expected MessageSender to be called even if typing indicator errors")
 	}
 }
 

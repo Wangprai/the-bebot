@@ -63,6 +63,7 @@ func (s *stubDiscordAdapter) Send(
 	ctx context.Context,
 	guildID string,
 	channelID string,
+	replyToMessageID string,
 	content string,
 ) (convcore.Message, error) {
 	s.mu.Lock()

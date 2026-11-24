@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"the-bebot/internal/conversation/core"
 )
 
-const defaultMaxRetrievedMemories = 5
+const (
+	defaultMaxRetrievedMemories = 5
+	defaultTypingInterval       = 8 * time.Second
+)
 
 var ErrEmptyResponse = errors.New("response generator returned empty response")
 
@@ -20,6 +24,7 @@ type HandleMentionUseCase struct {
 	conversationService    core.ConversationService
 	responseGenerator      core.ResponseGenerator
 	messageSender          core.MessageSender
+	typingIndicator        core.TypingIndicator
 	candidateCreator       core.CandidateCreator
 	memoryRetriever        core.MemoryRetriever
 	conversationRepository core.ConversationRepository
@@ -31,6 +36,7 @@ type HandleMentionUseCase struct {
 	maxRetrievedMemories int
 	contextTTL           time.Duration
 	mentionTimeout       time.Duration
+	typingInterval       time.Duration
 }
 
 func NewHandleMentionUseCase(
@@ -53,6 +59,7 @@ func NewHandleMentionUseCase(
 		maxMessages:          maxMessages,
 		maxRetrievedMemories: defaultMaxRetrievedMemories,
 		contextTTL:           contextTTL,
+		typingInterval:       defaultTypingInterval,
 	}
 }
 
@@ -139,6 +146,21 @@ func (uc *HandleMentionUseCase) SetCommunityContextSyncer(
 	}
 
 	uc.communitySyncer = syncer
+	return nil
+}
+
+func (uc *HandleMentionUseCase) SetTypingIndicator(
+	indicator core.TypingIndicator,
+) error {
+	if uc == nil {
+		return fmt.Errorf("handle mention use case is nil")
+	}
+
+	if indicator == nil {
+		return fmt.Errorf("typing indicator is required")
+	}
+
+	uc.typingIndicator = indicator
 	return nil
 }
 
@@ -263,11 +285,15 @@ func (uc *HandleMentionUseCase) HandleMention(
 		conversationContext.Memories = memories
 	}
 
-	// Generate AI response.
+	// Generate AI response while showing typing indicator.
+	stopTyping := uc.startTyping(ctx, event.ChannelID)
+	defer stopTyping()
+
 	response, err := uc.responseGenerator.Generate(
 		ctx,
 		conversationContext,
 	)
+	stopTyping()
 	if err != nil {
 		return fmt.Errorf("generate response: %w", err)
 	}
@@ -277,11 +303,12 @@ func (uc *HandleMentionUseCase) HandleMention(
 		return ErrEmptyResponse
 	}
 
-	// Send response to Discord.
+	// Send response to Discord as a reply to the trigger message.
 	_, err = uc.messageSender.Send(
 		ctx,
 		event.GuildID,
 		event.ChannelID,
+		event.MessageID,
 		response,
 	)
 	if err != nil {
@@ -307,6 +334,57 @@ func (uc *HandleMentionUseCase) HandleMention(
 	}
 
 	return nil
+}
+
+func (uc *HandleMentionUseCase) startTyping(
+	ctx context.Context,
+	channelID string,
+) func() {
+	indicator := uc.typingIndicator
+	if indicator == nil {
+		if ti, ok := uc.messageSender.(core.TypingIndicator); ok {
+			indicator = ti
+		}
+	}
+
+	if indicator == nil {
+		return func() {}
+	}
+
+	// Send an initial typing signal synchronously (best-effort).
+	_ = indicator.StartTyping(ctx, channelID)
+
+	interval := uc.typingInterval
+	if interval <= 0 {
+		interval = defaultTypingInterval
+	}
+
+	typingCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-typingCtx.Done():
+				return
+			case <-ticker.C:
+				_ = indicator.StartTyping(typingCtx, channelID)
+			}
+		}
+	}()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
 }
 
 func (uc *HandleMentionUseCase) loadLatestPersistedMessages(

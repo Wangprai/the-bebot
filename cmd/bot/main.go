@@ -416,6 +416,12 @@ func run() error {
 		return fmt.Errorf("configure community context syncer: %w", err)
 	}
 
+	if err := mentionHandler.SetTypingIndicator(
+		discordClient,
+	); err != nil {
+		return fmt.Errorf("configure typing indicator: %w", err)
+	}
+
 	if err := mentionHandler.SetMaxRetrievedMemories(
 		cfg.Memory.MaxRetrievedMemories,
 	); err != nil {

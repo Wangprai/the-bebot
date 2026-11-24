@@ -48,8 +48,17 @@ type MessageSender interface {
 		ctx context.Context,
 		guildID string,
 		channelID string,
+		replyToMessageID string,
 		content string,
 	) (Message, error)
+}
+
+// TypingIndicator broadcasts typing status in a channel while generating a response.
+type TypingIndicator interface {
+	StartTyping(
+		ctx context.Context,
+		channelID string,
+	) error
 }
 
 type CandidateCreator interface {
